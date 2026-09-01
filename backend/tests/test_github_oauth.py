@@ -99,7 +99,7 @@ def test_encrypting_twice_gives_different_ciphertext():
 def test_decrypting_with_a_different_key_fails_loudly(monkeypatch):
     from cryptography.fernet import Fernet
 
-    from app.github import crypto
+    from app.core import crypto  # the cipher itself lives here
 
     encrypted = encrypt_token(FAKE_TOKEN)
     crypto._fernet.cache_clear()

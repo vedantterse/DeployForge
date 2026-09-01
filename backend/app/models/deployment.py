@@ -14,7 +14,9 @@ import enum
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, ForeignKey, String, Text
+from datetime import datetime
+
+from sqlalchemy import DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -34,9 +36,18 @@ class DeploymentStatus(str, enum.Enum):
     ANALYZED = "analyzed"
     QUEUED = "queued"
     BUILDING = "building"
+    # The image exists but nothing is running yet. SCHEMA.md's original enum
+    # went straight from `building` to `running`, which left no way to say
+    # "built successfully, not yet started".
+    BUILT = "built"
     RUNNING = "running"
     LIVE = "live"
     FAILED = "failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {DeploymentStatus.BUILT, DeploymentStatus.LIVE,
+                        DeploymentStatus.FAILED}
 
 
 class Deployment(Base, UUIDMixin, TimestampMixin):
@@ -77,7 +88,19 @@ class Deployment(Base, UUIDMixin, TimestampMixin):
         index=True,
     )
 
-    # --- Infrastructure columns: null in Phase 1, filled by later phases ---
+    # --- Build output ---
+    # The image the build produced, e.g.
+    # "deployforge/a1b2c3-amvex-backend:3bb876b". A local Docker tag today; the
+    # same column holds a full registry reference once one is introduced.
+    image_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    build_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    build_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # --- Infrastructure columns: filled by later phases ---
     subdomain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     target_server_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)

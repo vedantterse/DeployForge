@@ -16,6 +16,7 @@ from app.api import (
     admin_routes,
     auth_routes,
     deployment_routes,
+    environment_routes,
     github_routes,
     repository_routes,
 )
@@ -44,6 +45,7 @@ register_error_handlers(app)
 app.include_router(auth_routes.router)
 app.include_router(github_routes.router)
 app.include_router(repository_routes.router)
+app.include_router(environment_routes.router)
 app.include_router(deployment_routes.router)
 app.include_router(admin_routes.router)
 

@@ -51,8 +51,19 @@ class Settings(BaseSettings):
     # --- Frontend ---
     frontend_origin: str = "http://localhost:3000"
 
+    # --- Builds ---
+    # The pack CLI (Cloud Native Buildpacks). Needs Docker on the same host.
+    pack_binary: str = "pack"
+    pack_builder: str = "paketobuildpacks/builder-jammy-base"
+    # Prefix for image tags, e.g. deployforge/<user>-<repo>:<sha>.
+    image_namespace: str = "deployforge"
+    # A build that has not finished by now is killed.
+    build_timeout_seconds: int = 1800
+    # Where build logs are written. Empty = alongside the repo workdir.
+    build_log_dir: str = ""
+
     # --- Misc ---
-    # Parent dir for temporary repo downloads (Task 4). Empty = system temp.
+    # Parent dir for temporary repo downloads. Empty = system temp.
     repo_workdir: str = ""
 
     @property

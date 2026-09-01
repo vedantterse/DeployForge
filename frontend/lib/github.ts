@@ -188,9 +188,13 @@ export type DeploymentStatus =
   | "analyzed"
   | "queued"
   | "building"
+  | "built"
   | "running"
   | "live"
   | "failed";
+
+/** Statuses where the build is still moving and the UI should keep polling. */
+export const IN_FLIGHT: DeploymentStatus[] = ["queued", "building"];
 
 export type DeploymentRow = {
   id: string;
@@ -199,6 +203,11 @@ export type DeploymentRow = {
   commit_sha: string | null;
   created_at: string;
   updated_at: string;
+  image_ref: string | null;
+  build_started_at: string | null;
+  build_finished_at: string | null;
+  error_message: string | null;
+  has_logs: boolean;
   repository_id: string;
   full_name: string;
   deploy_path: string | null;
@@ -231,4 +240,68 @@ export function listAllDeployments(): Promise<DeploymentRow[]> {
 
 export function platformOverview(): Promise<UserDeployments[]> {
   return apiFetch<UserDeployments[]>("/admin/overview");
+}
+
+// --- Environment variables --------------------------------------------------
+
+export type EnvVar = {
+  id: string;
+  key: string;
+  /** null for secrets — the plaintext never leaves the server once saved. */
+  value: string | null;
+  is_secret: boolean;
+  has_value: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EnvVarInput = {
+  key: string;
+  /** null means "keep the stored value" — how a secret survives a save. */
+  value: string | null;
+  is_secret: boolean;
+};
+
+export function listEnvVars(repoId: string): Promise<EnvVar[]> {
+  return apiFetch<EnvVar[]>(`/repos/${repoId}/env`);
+}
+
+/** Replace the whole set. This is the form's Save button. */
+export function saveEnvVars(
+  repoId: string,
+  variables: EnvVarInput[],
+): Promise<EnvVar[]> {
+  return apiFetch<EnvVar[]>(`/repos/${repoId}/env`, {
+    method: "PUT",
+    body: JSON.stringify({ variables }),
+  });
+}
+
+
+// --- Building ---------------------------------------------------------------
+
+export type BuildStarted = {
+  deployment_id: string;
+  status: DeploymentStatus;
+  target_label: string;
+};
+
+export type BuildLogs = {
+  deployment_id: string;
+  status: DeploymentStatus;
+  logs: string;
+  truncated: boolean;
+};
+
+/** Queue a build. Returns as soon as it is queued — the build runs in the background. */
+export function startBuild(repoId: string): Promise<BuildStarted> {
+  return apiFetch<BuildStarted>(`/repos/${repoId}/build`, { method: "POST" });
+}
+
+export function getDeployment(deploymentId: string): Promise<DeploymentRow> {
+  return apiFetch<DeploymentRow>(`/deployments/${deploymentId}`);
+}
+
+export function getBuildLogs(deploymentId: string): Promise<BuildLogs> {
+  return apiFetch<BuildLogs>(`/deployments/${deploymentId}/logs`);
 }

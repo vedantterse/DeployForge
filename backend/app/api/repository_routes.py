@@ -22,12 +22,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser
-from app.core.errors import AppError, NotFoundError
+from app.builder import pack
+from app.builder.service import run_build
+from app.core.errors import AppError, ConflictError, NotFoundError
 from app.db import get_db
 from app.detection.candidates import (
     ROOT_PATH,
@@ -47,6 +49,7 @@ from app.github.scan_token import create_scan_token, read_scan_token
 from app.github.token import get_access_token
 from app.models.deployment import BuildMethod, Deployment, DeploymentStatus
 from app.models.repository import DetectedType, Repository
+from app.schemas.deployment import BuildStartedOut
 from app.schemas.repository import (
     CandidateOut,
     DetectionOut,
@@ -345,4 +348,75 @@ async def analyze_repository(
     deployment = await _persist_detection(db, repository, result, commit_sha)
     return _detection_out(
         repository, deployment, result, commit_sha, file_count, total_bytes
+    )
+
+
+# Statuses that mean a build is already in flight for this target.
+_IN_FLIGHT = (DeploymentStatus.QUEUED, DeploymentStatus.BUILDING)
+
+
+@router.post(
+    "/{repo_id}/build",
+    response_model=BuildStartedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def build_repository(
+    repo_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+    background_tasks: BackgroundTasks,
+) -> BuildStartedOut:
+    """
+    Build a container image for this target with Cloud Native Buildpacks.
+
+    Returns immediately with 202: a build takes minutes, so it runs in the
+    background and the client polls `GET /deployments/{id}`. The tooling is
+    checked first, so a missing `pack` or Docker fails here with a fixable
+    message instead of silently marking the deployment failed a moment later.
+
+    The `analyzed` row created when the target was selected is reused for its
+    first build; later builds append a new row, one per attempt.
+    """
+    repository = await _owned_repository(db, repo_id, current_user.id)
+    await pack.check_toolchain()
+
+    existing = (
+        await db.execute(
+            select(Deployment)
+            .where(Deployment.repository_id == repository.id)
+            .order_by(Deployment.created_at.desc(), Deployment.id.desc())
+        )
+    ).scalars().all()
+
+    if any(d.status in _IN_FLIGHT for d in existing):
+        raise ConflictError(
+            f"A build is already running for {repository.target_label}."
+        )
+
+    latest = existing[0] if existing else None
+    if latest is not None and latest.status == DeploymentStatus.ANALYZED:
+        deployment = latest  # first build continues the analysis record
+    else:
+        deployment = Deployment(
+            repository_id=repository.id,
+            user_id=current_user.id,
+            commit_sha=latest.commit_sha if latest else None,
+            build_method=latest.build_method if latest else None,
+        )
+        db.add(deployment)
+
+    deployment.status = DeploymentStatus.QUEUED
+    deployment.error_message = None
+    deployment.image_ref = None
+    deployment.build_started_at = None
+    deployment.build_finished_at = None
+    await db.commit()
+    await db.refresh(deployment)
+
+    background_tasks.add_task(run_build, deployment.id)
+
+    return BuildStartedOut(
+        deployment_id=deployment.id,
+        status=deployment.status,
+        target_label=repository.target_label,
     )

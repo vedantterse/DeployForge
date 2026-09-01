@@ -29,6 +29,7 @@ from app.models.base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.deployment import Deployment
+    from app.models.environment import EnvironmentVariable
     from app.models.user import User
 
 
@@ -95,6 +96,10 @@ class Repository(Base, UUIDMixin, TimestampMixin):
 
     user: Mapped["User"] = relationship(back_populates="repositories")
     deployments: Mapped[list["Deployment"]] = relationship(
+        back_populates="repository",
+        cascade="all, delete-orphan",
+    )
+    environment_variables: Mapped[list["EnvironmentVariable"]] = relationship(
         back_populates="repository",
         cascade="all, delete-orphan",
     )

@@ -1,7 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import BuildPanel from "@/components/BuildPanel";
+import EnvVarEditor from "@/components/EnvVarEditor";
 import {
   describeCandidate,
   describeDetection,
@@ -149,7 +150,7 @@ export default function RepoList({ connected }: { connected: boolean }) {
       )}
 
       {selection?.state === "done" && selection.result && (
-        <DetectionCard result={selection.result} />
+        <ConfigureStep result={selection.result} />
       )}
 
       <ul className="mt-4 divide-y divide-slate-100 dark:divide-slate-800">
@@ -204,12 +205,32 @@ export default function RepoList({ connected }: { connected: boolean }) {
   );
 }
 
+/**
+ * Step 3: the target is connected and detected. Now collect any environment
+ * variables it needs, then build.
+ */
+function ConfigureStep({ result }: { result: DetectionResult }) {
+  return (
+    <div className="mt-4 space-y-4">
+      <DetectionCard result={result} />
+
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5">
+        <EnvVarEditor repositoryId={result.repository_id} />
+      </div>
+
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5">
+        <BuildPanel repositoryId={result.repository_id} />
+      </div>
+    </div>
+  );
+}
+
 function DetectionCard({ result }: { result: DetectionResult }) {
   const isUnknown = result.type === "unknown";
 
   return (
     <div
-      className={`mt-4 rounded-lg border p-4 ${
+      className={`rounded-lg border p-4 ${
         isUnknown
           ? "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950"
           : "border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950"
@@ -289,12 +310,6 @@ function DetectionCard({ result }: { result: DetectionResult }) {
         The download has been deleted; nothing from the repository was executed.
       </p>
 
-      <Link
-        href="/dashboard"
-        className="mt-4 inline-block rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
-      >
-        View my deployments
-      </Link>
     </div>
   );
 }

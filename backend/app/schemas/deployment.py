@@ -27,6 +27,13 @@ class DeploymentOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # --- build ---
+    image_ref: str | None = None
+    build_started_at: datetime | None = None
+    build_finished_at: datetime | None = None
+    error_message: str | None = None
+    has_logs: bool = False
+
     repository_id: uuid.UUID
     full_name: str
     deploy_path: str | None = None
@@ -51,3 +58,20 @@ class UserDeploymentsOut(BaseModel):
     repository_count: int
     github_username: str | None = None
     deployments: list[DeploymentOut]
+
+
+class BuildStartedOut(BaseModel):
+    """Acknowledgement that a build was queued. It runs in the background."""
+
+    deployment_id: uuid.UUID
+    status: DeploymentStatus
+    target_label: str
+
+
+class BuildLogsOut(BaseModel):
+    """Build output so far. Polled while a build is running."""
+
+    deployment_id: uuid.UUID
+    status: DeploymentStatus
+    logs: str
+    truncated: bool = False

@@ -8,6 +8,11 @@ Docker or a buildpack, and which framework.
 - PostgreSQL **15+** (15 is the minimum, older versions fail the migration)
 - Python **3.12+**
 - Node.js **20+**
+- **Docker** and the **`pack` CLI 0.40+** — only needed to build images
+
+`pack` older than 0.40 uses a Docker API version that Docker 29 rejects
+(`client version 1.38 is too old`). Check with `pack version`; install or
+upgrade from <https://buildpacks.io/docs/install-pack/>.
 
 ## 1. Database
 
@@ -76,6 +81,10 @@ APP_ENV=development
 ```
 
 `.env` is gitignored. Never commit it.
+
+The build settings (`PACK_BINARY`, `PACK_BUILDER`, `BUILD_TIMEOUT_SECONDS`, …)
+all have working defaults — see the comments in `.env.example`. Set
+`PACK_BINARY` only if `pack` is not on the server's PATH.
 
 ## 4. GitHub OAuth App
 
@@ -165,7 +174,13 @@ they leave no rows behind. GitHub is mocked; nothing contacts github.com.
 ## Using it
 
 Sign up → **Start new deployment** → **Authorize GitHub** → pick a repository →
-pick what inside it to deploy → see the result.
+pick what inside it to deploy → see the result → add any environment variables
+→ **Build image**.
+
+Builds run in the background; the page polls and streams the log. The first
+build on a machine downloads the buildpacks builder image (~4.7 GB), so it
+takes a while. The image is left in the local Docker store — `docker images` —
+and its tag is recorded on the deployment.
 
 For a monorepo, the target picker lists each top-level directory with what was
 detected in it, so you choose whether to deploy `frontend/`, `backend/`, or the
