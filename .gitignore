@@ -1,0 +1,23 @@
+# Internal design documents — not part of the shipped repo.
+claude.md
+CLAUDE.md
+SCHEMA.md
+PROJECT_STRUCTURE.md
+
+# Secrets — never commit environment files.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+
+# OS
+.DS_Store
