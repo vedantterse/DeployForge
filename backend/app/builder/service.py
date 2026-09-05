@@ -1,9 +1,20 @@
 """
-Orchestrate a build: download the repository, run buildpacks, record the result.
+Orchestrate a build: download the repository, produce an image, store it.
 
 The steps are the same ones the analysis flow uses — download to a temp
-directory, resolve the chosen target — with the buildpack build in the middle
-and the outcome written to the Deployment row.
+directory, resolve the chosen target — with the build in the middle and the
+outcome written to the Deployment row.
+
+Two build paths, chosen by what is actually in the directory being built:
+
+  * a Dockerfile        -> `docker build`, because the student already said
+                           exactly how their app should be assembled and
+                           second-guessing that is never an improvement;
+  * anything else       -> Cloud Native Buildpacks, which infer it.
+
+The result is pushed to the registry. A locally-tagged image is a side effect
+of the machine it was built on; an image in a registry is an artifact that can
+be pulled, run elsewhere, and rolled back to.
 
 This runs in the background, outside the HTTP request, so it opens its own
 database session and never lets an exception escape: a crashed build must leave
@@ -13,6 +24,7 @@ the deployment marked `failed` with a reason, not stuck in `building` forever.
 from __future__ import annotations
 
 import logging
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,22 +37,57 @@ from app.config import settings
 from app.core.crypto import decrypt_value
 from app.db import AsyncSessionLocal
 from app.detection.candidates import ROOT_PATH, resolve_path
+from app.detection.detector import _COMPOSE_NAMES, _DOCKERFILE_NAMES
 from app.github import client as github_client
 from app.github.download import downloaded_repository
 from app.github.token import get_access_token
-from app.models.deployment import Deployment, DeploymentStatus
+from app.models.deployment import BuildMethod, Deployment, DeploymentStatus
 from app.models.environment import EnvironmentVariable
+from app.models.event import EventLevel
 from app.models.repository import Repository
+from app.runtime import docker
+from app.runtime.service import record
 
 logger = logging.getLogger(__name__)
 
 
 def log_path_for(deployment_id: uuid.UUID) -> Path:
-    """Where a deployment's build log lives."""
+    """
+    Where a deployment's build log lives.
+
+    The fallback is the platform temp directory rather than a literal "/tmp":
+    on Windows that path is not the temp directory and resolves to `C:\\tmp`
+    on whichever drive is current.
+    """
     base = settings.build_log_dir.strip() or settings.repo_workdir.strip()
-    directory = Path(base) / "deployforge-build-logs" if base else Path("/tmp/deployforge-build-logs")
+    root = Path(base) if base else Path(tempfile.gettempdir())
+    directory = root / "deployforge-build-logs"
     directory.mkdir(parents=True, exist_ok=True)
     return directory / f"{deployment_id}.log"
+
+
+def find_dockerfile(source: Path) -> Path | None:
+    """The Dockerfile in this directory, if there is one."""
+    for name in _DOCKERFILE_NAMES:
+        candidate = source / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def has_compose(source: Path) -> bool:
+    """Whether this directory defines a multi-service compose stack."""
+    return any((source / name).is_file() for name in _COMPOSE_NAMES)
+
+
+def registry_ref(local_ref: str) -> str:
+    """
+    The image's name in the registry.
+
+    Returns the local tag unchanged when pushing is disabled, so a machine
+    without a registry still produces a runnable image.
+    """
+    return f"{settings.registry_prefix}{local_ref}"
 
 
 async def _environment_for(db: AsyncSession, repository_id: uuid.UUID) -> dict[str, str]:
@@ -128,6 +175,11 @@ async def _run_with_session(db: AsyncSession, deployment_id: uuid.UUID) -> None:
             status=DeploymentStatus.FAILED,
             error=f"{type(exc).__name__}: {exc}",
         )
+        await record(
+            db, deployment_id, "build",
+            f"Build failed: {type(exc).__name__}: {exc}",
+            level=EventLevel.ERROR,
+        )
 
 
 async def _build(
@@ -155,22 +207,18 @@ async def _build(
         deployment.commit_sha = commit_sha
         await db.commit()
 
-    image_ref = pack.build_image_ref(
+    local_ref = pack.build_image_ref(
         user_id=repository.user_id,
         repository_name=repository.name,
         deploy_path=repository.deploy_path,
         commit_sha=commit_sha,
     )
+    image_ref = registry_ref(local_ref)
     env = await _environment_for(db, repository.id)
 
-    _append(
-        log_file,
-        f"Building {repository.target_label}\n"
-        f"  branch     {repository.default_branch}\n"
-        f"  commit     {commit_sha or 'unknown'}\n"
-        f"  image      {image_ref}\n"
-        f"  env vars   {len(env)}\n"
-        f"  builder    {settings.pack_builder}\n\n",
+    await record(
+        db, deployment.id, "download",
+        f"Downloading {repository.full_name} at {repository.default_branch}.",
     )
 
     async with downloaded_repository(
@@ -188,25 +236,144 @@ async def _build(
             )
             return
 
-        # The env file lives inside the temp workdir, which is deleted with it.
-        env_file = None
-        if env:
-            env_file = pack.write_env_file(env, download.workdir / "build.env")
+        # The directory being built is the authority on how to build it — not
+        # the detection row, which may predate a commit that added a Dockerfile.
+        dockerfile = find_dockerfile(source)
+        method = BuildMethod.DOCKER if dockerfile else BuildMethod.BUILDPACK
+        deployment.build_method = method
+        await db.commit()
 
-        outcome = await pack.run_pack_build(
-            image_ref=image_ref,
-            source_path=source,
-            log_path=log_file,
-            env_file=env_file,
+        _append(
+            log_file,
+            f"Building {repository.target_label}\n"
+            f"  branch     {repository.default_branch}\n"
+            f"  commit     {commit_sha or 'unknown'}\n"
+            f"  image      {image_ref}\n"
+            f"  method     {method.value}\n"
+            f"  env vars   {len(env)}\n\n",
+        )
+        await record(
+            db, deployment.id, "build",
+            f"Building with {'the repository Dockerfile' if dockerfile else 'Cloud Native Buildpacks'}.",
         )
 
-    if outcome.succeeded:
-        _append(log_file, f"\nBuilt {image_ref} in {outcome.duration_seconds:.0f}s\n")
-        await _finish(db, deployment, status=DeploymentStatus.BUILT, image_ref=image_ref)
-    else:
+        if has_compose(source) and dockerfile is None:
+            # Compose describes several services and their wiring; there is no
+            # single image to produce, so say that plainly instead of building
+            # something that is not what the file describes.
+            await _finish(
+                db, deployment, status=DeploymentStatus.FAILED,
+                error=(
+                    "This target uses Docker Compose, which describes multiple "
+                    "services. DeployForge runs one image per deployment — add a "
+                    "Dockerfile for the service you want to deploy, or pick a "
+                    "subdirectory that has one."
+                ),
+            )
+            return
+
+        if dockerfile is not None:
+            succeeded, error = await _build_with_docker(
+                image_ref=image_ref, source=source,
+                dockerfile=dockerfile, log_file=log_file,
+            )
+        else:
+            succeeded, error = await _build_with_buildpacks(
+                image_ref=image_ref, source=source,
+                workdir=download.workdir, env=env, log_file=log_file,
+            )
+
+    if not succeeded:
         await _finish(
             db, deployment, status=DeploymentStatus.FAILED,
-            error=outcome.error or "The build failed. See the build log.",
+            error=error or "The build failed. See the build log.",
+        )
+        await record(
+            db, deployment.id, "build",
+            error or "The build failed.", level=EventLevel.ERROR,
+        )
+        return
+
+    await record(
+        db, deployment.id, "build", f"Built {image_ref}.", level=EventLevel.SUCCESS
+    )
+    await _push(db, deployment, image_ref, log_file)
+
+    await _finish(db, deployment, status=DeploymentStatus.BUILT, image_ref=image_ref)
+
+
+async def _build_with_docker(
+    *, image_ref: str, source: Path, dockerfile: Path, log_file: Path
+) -> tuple[bool, str | None]:
+    """Build the student's own Dockerfile."""
+    result = await docker.build_image(
+        image_ref=image_ref,
+        context_path=source,
+        dockerfile=dockerfile,
+        log_path=log_file,
+    )
+    if result.ok:
+        _append(log_file, f"\nBuilt {image_ref} from {dockerfile.name}.\n")
+        return True, None
+    return False, f"docker build failed: {result.message}"
+
+
+async def _build_with_buildpacks(
+    *, image_ref: str, source: Path, workdir: Path,
+    env: dict[str, str], log_file: Path,
+) -> tuple[bool, str | None]:
+    """Build with Cloud Native Buildpacks, which infer the whole recipe."""
+    await pack.check_toolchain()
+
+    # The env file lives inside the temp workdir, which is deleted with it.
+    env_file = pack.write_env_file(env, workdir / "build.env") if env else None
+
+    outcome = await pack.run_pack_build(
+        image_ref=image_ref,
+        source_path=source,
+        log_path=log_file,
+        env_file=env_file,
+    )
+    if outcome.succeeded:
+        _append(
+            log_file,
+            f"\nBuilt {image_ref} in {outcome.duration_seconds:.0f}s.\n",
+        )
+        return True, None
+    return False, outcome.error or "The buildpack build failed."
+
+
+async def _push(
+    db: AsyncSession, deployment: Deployment, image_ref: str, log_file: Path
+) -> None:
+    """
+    Store the image in the registry.
+
+    A push failure is recorded but does not fail the build: the image exists
+    locally and this deployment runs on the same host, so the app still works.
+    Losing the *artifact* is worth a warning, not a red deployment.
+    """
+    if not settings.registry_push:
+        return
+
+    deployment.status = DeploymentStatus.PUSHING
+    await db.commit()
+
+    _append(log_file, f"\nPushing {image_ref} to the registry...\n")
+    result = await docker.push_image(image_ref, log_path=log_file)
+
+    if result.ok:
+        await record(
+            db, deployment.id, "push",
+            f"Pushed {image_ref} to the registry.", level=EventLevel.SUCCESS,
+        )
+    else:
+        _append(log_file, f"\nPush failed: {result.message}\n")
+        await record(
+            db, deployment.id, "push",
+            f"Could not push to the registry ({result.message}). The image is "
+            "available locally, so the app can still run.",
+            level=EventLevel.WARNING,
         )
 
 

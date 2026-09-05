@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Enum, String
+from sqlalchemy import Boolean, Enum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
@@ -44,6 +44,12 @@ class User(Base, UUIDMixin, TimestampMixin):
     # Soft-disable an account without deleting it or its history.
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
+    )
+    # How many apps this account may have running at once. The platform runs on
+    # one machine shared by a whole class, so "deploy" has to be a bounded
+    # privilege rather than an unlimited one. Admins raise it per student.
+    max_deployments: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
     )
 
     github_connection: Mapped["GitHubConnection | None"] = relationship(

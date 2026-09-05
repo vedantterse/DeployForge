@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import sys
 import uuid
 from pathlib import Path
 
@@ -25,6 +26,48 @@ from app.models.deployment import BuildMethod, Deployment, DeploymentStatus
 from app.models.repository import DetectedType, Repository
 
 USER_ID = uuid.UUID("a1b2c3d4-0000-0000-0000-000000000000")
+
+IS_WINDOWS = sys.platform == "win32"
+
+
+def stub_binary(
+    tmp_path: Path,
+    name: str,
+    *,
+    echo: str | None = None,
+    exit_code: int = 0,
+    hang: bool = False,
+) -> Path:
+    """
+    An executable stand-in for `pack` that works on the current platform.
+
+    `run_pack_build` execs its binary directly, so the stub has to be a real
+    program. `/bin/true`, `/bin/false` and `#!/bin/sh` scripts do not exist on
+    Windows — a `.cmd` batch file is written there instead, which CreateProcess
+    runs the same way.
+    """
+    if IS_WINDOWS:
+        script = tmp_path / f"{name}.cmd"
+        lines = ["@echo off"]
+        if echo is not None:
+            lines.append(f"echo {echo}")
+        if hang:
+            # Windows has no `sleep`; pinging the loopback address blocks.
+            lines.append("ping -n 300 127.0.0.1 >nul")
+        lines.append(f"exit /b {exit_code}")
+        script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+        return script
+
+    script = tmp_path / name
+    lines = ["#!/bin/sh"]
+    if echo is not None:
+        lines.append(f"echo '{echo}'")
+    if hang:
+        lines.append("sleep 300")
+    lines.append(f"exit {exit_code}")
+    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    script.chmod(0o755)
+    return script
 
 
 # --- Image naming -----------------------------------------------------------
@@ -75,6 +118,10 @@ def test_env_file_is_written_as_key_value_lines(tmp_path):
     assert path.read_text().splitlines() == ["A=1", "B=2"]  # sorted, stable
 
 
+@pytest.mark.skipif(
+    IS_WINDOWS,
+    reason="POSIX mode bits do not exist on NTFS; chmod(0o600) cannot set them.",
+)
 def test_env_file_is_not_world_readable(tmp_path):
     """It holds secrets, so it must not be readable by other users."""
     path = write_env_file({"SECRET": "s3cret"}, tmp_path / "build.env")
@@ -116,7 +163,9 @@ def test_preflight_passes_when_both_are_present(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_successful_build_reports_success(monkeypatch, tmp_path):
     monkeypatch.setattr(pack, "preflight", lambda: None)
-    monkeypatch.setattr(settings, "pack_binary", "/bin/true")
+    monkeypatch.setattr(
+        settings, "pack_binary", str(stub_binary(tmp_path, "ok-pack", exit_code=0))
+    )
 
     outcome = await pack.run_pack_build(
         image_ref="x/y:z", source_path=tmp_path, log_path=tmp_path / "build.log"
@@ -128,7 +177,9 @@ async def test_a_successful_build_reports_success(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_a_failing_build_reports_the_exit_code(monkeypatch, tmp_path):
     monkeypatch.setattr(pack, "preflight", lambda: None)
-    monkeypatch.setattr(settings, "pack_binary", "/bin/false")
+    monkeypatch.setattr(
+        settings, "pack_binary", str(stub_binary(tmp_path, "bad-pack", exit_code=1))
+    )
 
     outcome = await pack.run_pack_build(
         image_ref="x/y:z", source_path=tmp_path, log_path=tmp_path / "build.log"
@@ -141,7 +192,9 @@ async def test_a_failing_build_reports_the_exit_code(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_the_command_is_recorded_in_the_log(monkeypatch, tmp_path):
     monkeypatch.setattr(pack, "preflight", lambda: None)
-    monkeypatch.setattr(settings, "pack_binary", "/bin/true")
+    monkeypatch.setattr(
+        settings, "pack_binary", str(stub_binary(tmp_path, "ok-pack", exit_code=0))
+    )
     monkeypatch.setattr(settings, "pack_builder", "paketobuildpacks/builder-jammy-base")
 
     log = tmp_path / "build.log"
@@ -156,9 +209,7 @@ async def test_the_command_is_recorded_in_the_log(monkeypatch, tmp_path):
 async def test_a_build_that_hangs_is_killed(monkeypatch, tmp_path):
     monkeypatch.setattr(pack, "preflight", lambda: None)
     # A stand-in for pack that ignores its arguments and never finishes.
-    hanging = tmp_path / "hanging-pack"
-    hanging.write_text("#!/bin/sh\nsleep 300\n")
-    hanging.chmod(0o755)
+    hanging = stub_binary(tmp_path, "hanging-pack", hang=True)
     monkeypatch.setattr(settings, "pack_binary", str(hanging))
 
     outcome = await pack.run_pack_build(
@@ -230,12 +281,26 @@ def _stub_build_environment(monkeypatch, tmp_path, *, outcome: BuildOutcome, sou
         calls.update(kwargs)
         return outcome
 
+    async def fake_check_toolchain() -> None:
+        return None
+
+    async def fake_push(image_ref, **kwargs):
+        pushed.append(image_ref)
+        return SimpleNamespace(ok=True, message="", exit_code=0)
+
+    pushed: list[str] = []
+
     monkeypatch.setattr(build_service, "downloaded_repository", fake_download)
     monkeypatch.setattr(build_service, "get_access_token", fake_token)
     monkeypatch.setattr(build_service.github_client, "get_head_commit", fake_head)
     monkeypatch.setattr(build_service.pack, "run_pack_build", fake_run)
     monkeypatch.setattr(build_service.pack, "docker_available", lambda: _true())
+    monkeypatch.setattr(build_service.pack, "check_toolchain", fake_check_toolchain)
+    # The registry is a real network dependency; the orchestration is what is
+    # under test here, not whether this machine has one running.
+    monkeypatch.setattr(build_service.docker, "push_image", fake_push)
     monkeypatch.setattr(settings, "build_log_dir", str(tmp_path / "logs"))
+    calls["pushed"] = pushed
     return calls
 
 
@@ -267,7 +332,8 @@ async def test_a_successful_build_marks_the_deployment_built(
 
     await db_session.refresh(deployment)
     assert deployment.status == DeploymentStatus.BUILT
-    assert deployment.image_ref.startswith("deployforge/")
+    # The image is stored in the registry, so the ref is registry-qualified.
+    assert "deployforge/" in deployment.image_ref
     assert deployment.image_ref.endswith(":bbbbbbb")
     assert deployment.error_message is None
     assert deployment.build_started_at is not None
@@ -689,9 +755,7 @@ def test_version_is_parsed_from_pack_output():
 
 
 def _fake_pack_version(monkeypatch, tmp_path, version: str):
-    script = tmp_path / "fake-pack"
-    script.write_text(f"#!/bin/sh\necho '{version}'\n")
-    script.chmod(0o755)
+    script = stub_binary(tmp_path, "fake-pack", echo=version)
     monkeypatch.setattr(settings, "pack_binary", str(script))
     monkeypatch.setattr(pack, "preflight", lambda: None)
 

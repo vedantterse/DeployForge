@@ -19,6 +19,16 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 class Base(DeclarativeBase):
     """Declarative base; `Base.metadata` is what Alembic autogenerates from."""
 
+    # Fetch server-generated values (created_at, and updated_at's `onupdate`)
+    # during the flush itself, via PostgreSQL's RETURNING.
+    #
+    # Without this they are left *expired* after an INSERT or UPDATE, so the
+    # next read of `updated_at` silently emits a SELECT. Under asyncio that
+    # read happens outside a greenlet context — building a response object is
+    # ordinary synchronous attribute access — and raises MissingGreenlet
+    # instead of loading. Fetching eagerly means the values are simply there.
+    __mapper_args__ = {"eager_defaults": True}
+
 
 class UUIDMixin:
     """UUID primary key, generated application-side so it is known before flush."""

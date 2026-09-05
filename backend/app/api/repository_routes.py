@@ -378,7 +378,14 @@ async def build_repository(
     first build; later builds append a new row, one per attempt.
     """
     repository = await _owned_repository(db, repo_id, current_user.id)
-    await pack.check_toolchain()
+
+    # Only a buildpack build needs `pack`. A repository with its own Dockerfile
+    # is built by Docker alone, and demanding an unrelated tool before starting
+    # would block the one path that needs nothing extra installed. The final
+    # decision is made against the downloaded files (see `builder/service.py`);
+    # this is the early, fixable version of it.
+    if repository.detected_type is not DetectedType.DOCKER:
+        await pack.check_toolchain()
 
     existing = (
         await db.execute(

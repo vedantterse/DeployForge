@@ -5,9 +5,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from app.models.deployment import BuildMethod, DeploymentStatus
+from app.models.event import EventLevel
 from app.models.repository import DetectedType
 from app.models.user import UserRole
 
@@ -34,6 +35,15 @@ class DeploymentOut(BaseModel):
     error_message: str | None = None
     has_logs: bool = False
 
+    # --- runtime ---
+    url: str | None = None
+    subdomain: str | None = None
+    app_port: int | None = None
+    container_name: str | None = None
+    runtime_started_at: datetime | None = None
+    runtime_stopped_at: datetime | None = None
+    suspended_by_admin: bool = False
+
     repository_id: uuid.UUID
     full_name: str
     deploy_path: str | None = None
@@ -56,6 +66,8 @@ class UserDeploymentsOut(BaseModel):
     created_at: datetime
     deployment_count: int
     repository_count: int
+    running_count: int = 0
+    max_deployments: int = 3
     github_username: str | None = None
     deployments: list[DeploymentOut]
 
@@ -75,3 +87,41 @@ class BuildLogsOut(BaseModel):
     status: DeploymentStatus
     logs: str
     truncated: bool = False
+
+
+class DeploymentEventOut(BaseModel):
+    """One line of a deployment's timeline."""
+
+    id: uuid.UUID
+    stage: str
+    level: EventLevel
+    message: str
+    actor: str | None = None
+    created_at: datetime
+
+
+class RuntimeLogsOut(BaseModel):
+    """What the running container has printed."""
+
+    deployment_id: uuid.UUID
+    status: DeploymentStatus
+    logs: str
+    running: bool = False
+
+
+class AdminUserUpdate(BaseModel):
+    """The fields an admin may change on an account."""
+
+    is_active: bool | None = None
+    max_deployments: int | None = Field(default=None, ge=0, le=50)
+    role: UserRole | None = None
+
+
+class PlatformStatusOut(BaseModel):
+    """Whether the moving parts the platform depends on are up."""
+
+    docker: bool
+    registry: bool
+    router: bool
+    buildpacks: bool
+    detail: dict[str, str] = {}

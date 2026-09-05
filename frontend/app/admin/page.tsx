@@ -1,130 +1,336 @@
+/**
+ * The admin console: who is on the platform, what they are running, and the
+ * health of the machine they share.
+ *
+ * Infrastructure status sits at the top because it changes how everything
+ * below should be read — when Docker is down, every failed build on the page
+ * has the same cause, and an admin should see that before investigating
+ * thirty students individually.
+ */
+
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+
 import RequireAuth from "@/components/RequireAuth";
-import { apiFetch, ApiError } from "@/lib/api";
-import type { User } from "@/lib/auth";
+import StatusBadge from "@/components/StatusBadge";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Dot,
+  Metric,
+  SectionTitle,
+  Skeleton,
+  cx,
+  relativeTime,
+} from "@/components/ui";
+import {
+  AlertIcon,
+  BoxIcon,
+  CheckIcon,
+  ExternalIcon,
+  GitHubIcon,
+  ServerIcon,
+  ShieldIcon,
+  UsersIcon,
+} from "@/components/Icons";
+import {
+  getOverview,
+  getPlatformStatus,
+  getStats,
+  updateUser,
+  type PlatformStats,
+  type PlatformStatus,
+  type UserWithDeployments,
+} from "@/lib/admin";
+import { isRunning } from "@/lib/deployments";
 
-type Stats = {
-  users: number;
-  admins: number;
-  github_connections: number;
-  repositories: number;
-  deployments: number;
-};
+export default function AdminPage() {
+  return <RequireAuth adminOnly>{() => <Console />}</RequireAuth>;
+}
 
-/**
- * Admin-only page.
- *
- * The data is fetched from /admin/*, which is gated by require_admin on the
- * backend. A normal user reaching this URL gets a 403 from the API and sees
- * the refusal below — the page cannot show them the data by mistake, because
- * it never has it.
- */
-function AdminContent() {
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [users, setUsers] = useState<User[] | null>(null);
-  const [error, setError] = useState<{ status: number; message: string } | null>(
-    null,
-  );
+function Console() {
+  const [users, setUsers] = useState<UserWithDeployments[] | null>(null);
+  const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [status, setStatus] = useState<PlatformStatus | null>(null);
+  const [error, setError] = useState("");
 
-  useEffect(() => {
-    Promise.all([apiFetch<Stats>("/admin/stats"), apiFetch<User[]>("/admin/users")])
-      .then(([s, u]) => {
-        setStats(s);
-        setUsers(u);
-      })
-      .catch((err) =>
-        setError({
-          status: err instanceof ApiError ? err.status : 0,
-          message: err instanceof Error ? err.message : "Request failed",
-        }),
-      );
+  const load = useCallback(async () => {
+    try {
+      const [o, s] = await Promise.all([getOverview(), getStats()]);
+      setUsers(o);
+      setStats(s);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load the console.");
+    }
+    // Status probes real infrastructure and can be slow; never block the page.
+    getPlatformStatus().then(setStatus).catch(() => undefined);
   }, []);
 
-  if (error) {
-    return (
-      <main className="mx-auto w-full max-w-4xl flex-1 p-8">
-        <div className="rounded-xl border border-red-200 bg-red-50 p-6 dark:border-red-900 dark:bg-red-950">
-          <h1 className="text-lg font-semibold text-red-800 dark:text-red-200">
-            {error.status === 403 ? "Administrator access required" : "Error"}
-          </h1>
-          <p className="mt-1 text-sm text-red-700 dark:text-red-300">
-            {error.message}
-          </p>
-          <p className="mt-3 text-xs text-red-600 dark:text-red-400">
-            The backend refused this request with HTTP {error.status}. Role
-            checks run on the server, not in the browser.
-          </p>
-        </div>
-      </main>
-    );
-  }
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
-    <main className="mx-auto w-full max-w-4xl flex-1 space-y-6 p-8">
+    <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold">Admin</h1>
-        <p className="mt-1 text-slate-600 dark:text-slate-400">
-          Platform-wide view. Visible only to accounts with the admin role.
+        <h1 className="text-2xl font-semibold tracking-tight">Accounts</h1>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">
+          Everyone on the platform, what they have deployed, and what they are
+          allowed to run.
         </p>
       </div>
 
-      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <h2 className="font-semibold">Platform stats</h2>
-        {stats ? (
-          <dl className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-5">
-            {Object.entries(stats).map(([key, value]) => (
-              <div key={key}>
-                <dt className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  {key.replace(/_/g, " ")}
-                </dt>
-                <dd className="text-2xl font-semibold">{value}</dd>
-              </div>
+      {error && <Alert>{error}</Alert>}
+
+      <InfrastructurePanel status={status} />
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Accounts" value={stats?.users ?? "—"} />
+        <Metric
+          label="Running apps"
+          value={stats?.running ?? "—"}
+          tone={stats && stats.running > 0 ? "ok" : "neutral"}
+        />
+        <Metric label="Total deployments" value={stats?.deployments ?? "—"} />
+        <Metric
+          label="Failed"
+          value={stats?.failed ?? "—"}
+          tone={stats && stats.failed > 0 ? "danger" : "neutral"}
+        />
+      </div>
+
+      <section>
+        <SectionTitle hint="Newest accounts first. Raise a student's limit to let them run more apps at once.">
+          <span className="inline-flex items-center gap-2">
+            <UsersIcon />
+            Accounts
+          </span>
+        </SectionTitle>
+
+        {users === null ? (
+          <div className="space-y-3">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-32" />
             ))}
-          </dl>
+          </div>
         ) : (
-          <p className="mt-2 text-sm text-slate-500">Loading…</p>
+          <div className="space-y-3">
+            {users.map((u) => (
+              <UserRow key={u.id} user={u} onChanged={load} onError={setError} />
+            ))}
+          </div>
         )}
       </section>
-
-      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <h2 className="font-semibold">All users</h2>
-        <div className="mt-3 overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-              <tr>
-                <th className="py-2 pr-4">Email</th>
-                <th className="py-2 pr-4">Role</th>
-                <th className="py-2 pr-4">Active</th>
-                <th className="py-2">Joined</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(users ?? []).map((u) => (
-                <tr
-                  key={u.id}
-                  className="border-t border-slate-100 dark:border-slate-800"
-                >
-                  <td className="py-2 pr-4 font-mono">{u.email}</td>
-                  <td className="py-2 pr-4">{u.role}</td>
-                  <td className="py-2 pr-4">{String(u.is_active)}</td>
-                  <td className="py-2">
-                    {new Date(u.created_at).toLocaleDateString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {users?.length === 0 && (
-            <p className="mt-2 text-sm text-slate-500">No users yet.</p>
-          )}
-        </div>
-      </section>
-    </main>
+    </div>
   );
 }
 
-export default function AdminPage() {
-  return <RequireAuth>{() => <AdminContent />}</RequireAuth>;
+/* --- Infrastructure ----------------------------------------------------- */
+
+function InfrastructurePanel({ status }: { status: PlatformStatus | null }) {
+  if (!status) return <Skeleton className="h-24" />;
+
+  const parts: { key: keyof PlatformStatus; label: string; hint: string }[] = [
+    { key: "docker", label: "Docker", hint: "builds and containers" },
+    { key: "registry", label: "Registry", hint: "image storage" },
+    { key: "router", label: "Router", hint: "app URLs" },
+    { key: "buildpacks", label: "Buildpacks", hint: "repos with no Dockerfile" },
+  ];
+  const degraded = parts.filter((p) => !status[p.key]);
+
+  return (
+    <Card className="p-5">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="inline-flex items-center gap-2 font-semibold tracking-tight">
+          <ServerIcon />
+          Infrastructure
+        </h2>
+        {degraded.length === 0 ? (
+          <Badge tone="ok">
+            <CheckIcon className="h-3 w-3" />
+            All systems up
+          </Badge>
+        ) : (
+          <Badge tone="warn">
+            <AlertIcon className="h-3 w-3" />
+            {degraded.length} degraded
+          </Badge>
+        )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {parts.map((part) => {
+          const up = status[part.key] as boolean;
+          return (
+            <div
+              key={part.key}
+              className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2.5"
+            >
+              <div className="flex items-center gap-2">
+                <Dot tone={up ? "ok" : "danger"} pulse={up} />
+                <span className="text-sm font-medium">{part.label}</span>
+              </div>
+              <p className="mt-0.5 pl-4 text-xs text-[var(--text-dim)]">
+                {up ? part.hint : "unavailable"}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+
+      {Object.entries(status.detail).length > 0 && (
+        <div className="mt-4 space-y-2">
+          {Object.entries(status.detail).map(([key, message]) => (
+            <p
+              key={key}
+              className="rounded-[var(--radius-sm)] bg-[var(--warn-soft)] px-3 py-2 text-xs text-[var(--warn)]"
+            >
+              <span className="font-semibold capitalize">{key}:</span> {message}
+            </p>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* --- Accounts ----------------------------------------------------------- */
+
+function UserRow({
+  user,
+  onChanged,
+  onError,
+}: {
+  user: UserWithDeployments;
+  onChanged: () => void;
+  onError: (m: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [quota, setQuota] = useState(user.max_deployments);
+
+  async function change(changes: Parameters<typeof updateUser>[1]) {
+    setBusy(true);
+    onError("");
+    try {
+      await updateUser(user.id, changes);
+      onChanged();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not update the account.");
+      setQuota(user.max_deployments);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const running = user.deployments.filter((d) => isRunning(d.status)).length;
+  const atLimit = running >= user.max_deployments;
+
+  return (
+    <Card className={cx(!user.is_active && "opacity-60")}>
+      <div className="flex flex-wrap items-start justify-between gap-4 p-5">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate font-medium">{user.email}</span>
+            {user.role === "admin" && (
+              <Badge tone="accent">
+                <ShieldIcon className="h-3 w-3" />
+                Admin
+              </Badge>
+            )}
+            {!user.is_active && <Badge tone="danger">Disabled</Badge>}
+          </div>
+
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--text-dim)]">
+            {user.github_username ? (
+              <span className="inline-flex items-center gap-1.5">
+                <GitHubIcon className="h-3.5 w-3.5" />
+                {user.github_username}
+              </span>
+            ) : (
+              <span>GitHub not connected</span>
+            )}
+            <span>{user.repository_count} targets</span>
+            <span
+              className={cx(
+                "tabular",
+                atLimit && running > 0 && "text-[var(--warn)]",
+              )}
+            >
+              {running} / {user.max_deployments} running
+            </span>
+            <span>joined {relativeTime(user.created_at)}</span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+            Limit
+            <input
+              type="number"
+              min={0}
+              max={50}
+              value={quota}
+              disabled={busy}
+              onChange={(e) => setQuota(Number(e.target.value))}
+              onBlur={() => {
+                if (quota !== user.max_deployments) {
+                  change({ max_deployments: quota });
+                }
+              }}
+              className="tabular w-16 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-center text-sm focus:border-[var(--accent)] focus:outline-none"
+            />
+          </label>
+
+          <Button
+            size="sm"
+            variant={user.is_active ? "secondary" : "primary"}
+            loading={busy}
+            onClick={() => change({ is_active: !user.is_active })}
+          >
+            {user.is_active ? "Disable" : "Enable"}
+          </Button>
+
+          {user.deployments.length > 0 && (
+            <Button size="sm" variant="ghost" onClick={() => setOpen((o) => !o)}>
+              {open ? "Hide" : `${user.deployments.length} apps`}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {open && (
+        <div className="border-t border-[var(--border)] bg-[var(--surface-2)]/50 px-5 py-4">
+          <div className="space-y-2">
+            {user.deployments.map((d) => (
+              <div
+                key={d.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-sm)] bg-[var(--surface)] px-3 py-2.5"
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <BoxIcon className="h-4 w-4 shrink-0 text-[var(--text-dim)]" />
+                  <span className="truncate text-sm">{d.target_label}</span>
+                  <StatusBadge status={d.status} />
+                </span>
+                {isRunning(d.status) && d.url && (
+                  <a
+                    href={d.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs text-[var(--ok)] hover:underline"
+                  >
+                    {d.url.replace(/^https?:\/\//, "")}
+                    <ExternalIcon className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
 }

@@ -11,16 +11,24 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser
-from app.core.errors import NotFoundError
+from app.core.errors import ConflictError, NotFoundError
 from app.db import get_db
 from app.models.deployment import Deployment
+from app.models.event import DeploymentEvent
 from app.models.repository import Repository
-from app.schemas.deployment import BuildLogsOut, DeploymentOut
+from app.runtime import docker
+from app.runtime import service as runtime_service
+from app.schemas.deployment import (
+    BuildLogsOut,
+    DeploymentEventOut,
+    DeploymentOut,
+    RuntimeLogsOut,
+)
 
 router = APIRouter(prefix="/deployments", tags=["deployments"])
 
@@ -45,6 +53,13 @@ def _deployment_out(
         build_finished_at=deployment.build_finished_at,
         error_message=deployment.error_message,
         has_logs=bool(deployment.logs_ref),
+        url=deployment.url,
+        subdomain=deployment.subdomain,
+        app_port=deployment.app_port,
+        container_name=deployment.container_name,
+        runtime_started_at=deployment.runtime_started_at,
+        runtime_stopped_at=deployment.runtime_stopped_at,
+        suspended_by_admin=deployment.suspended_by_admin,
         repository_id=repository.id,
         full_name=repository.full_name,
         deploy_path=repository.deploy_path,
@@ -136,3 +151,117 @@ async def get_build_logs(
         logs=text,
         truncated=truncated,
     )
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+# Starting and stopping happen inline rather than as background tasks: both
+# take a second or two, and the user is watching a button. A build is minutes,
+# which is why that one is backgrounded and polled.
+
+
+@router.post("/{deployment_id}/start", response_model=DeploymentOut)
+async def start_deployment(
+    deployment_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> DeploymentOut:
+    """
+    Run this deployment's image and publish it at its URL.
+
+    Enforces the account's running-app quota, and refuses while a build or an
+    earlier start is still in flight.
+    """
+    deployment, repository = await _owned_deployment(db, deployment_id, current_user.id)
+    if deployment.status.is_busy:
+        raise ConflictError(
+            f"This deployment is {deployment.status.value}. Wait for it to finish."
+        )
+
+    await runtime_service.start(db, deployment, repository, current_user)
+    return _deployment_out(deployment, repository)
+
+
+@router.post("/{deployment_id}/stop", response_model=DeploymentOut)
+async def stop_deployment(
+    deployment_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> DeploymentOut:
+    """Stop the app and take it off the router. Idempotent."""
+    deployment, repository = await _owned_deployment(db, deployment_id, current_user.id)
+    await runtime_service.stop(db, deployment)
+    return _deployment_out(deployment, repository)
+
+
+@router.post("/{deployment_id}/restart", response_model=DeploymentOut)
+async def restart_deployment(
+    deployment_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> DeploymentOut:
+    """Stop and start again, keeping the same image and the same URL."""
+    deployment, repository = await _owned_deployment(db, deployment_id, current_user.id)
+    if deployment.status.is_busy:
+        raise ConflictError(
+            f"This deployment is {deployment.status.value}. Wait for it to finish."
+        )
+
+    await runtime_service.restart(db, deployment, repository, current_user)
+    return _deployment_out(deployment, repository)
+
+
+@router.delete("/{deployment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_deployment(
+    deployment_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> Response:
+    """Stop the app, remove its container, and delete the record."""
+    deployment, _ = await _owned_deployment(db, deployment_id, current_user.id)
+    await runtime_service.destroy(db, deployment)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{deployment_id}/runtime-logs", response_model=RuntimeLogsOut)
+async def get_runtime_logs(
+    deployment_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+    tail: Annotated[int, Query(ge=10, le=2000)] = 500,
+) -> RuntimeLogsOut:
+    """
+    What the running app has printed.
+
+    Distinct from the build log: that one says why an image could not be
+    produced, this one says why the app it produced will not stay up. A
+    container that has exited still has logs, which is exactly when they
+    matter most.
+    """
+    deployment, _ = await _owned_deployment(db, deployment_id, current_user.id)
+
+    logs = ""
+    running = False
+    if deployment.container_name:
+        state = await docker.container_state(deployment.container_name)
+        running = bool(state and state.get("Running"))
+        if state is not None:
+            logs = await docker.container_logs(deployment.container_name, tail=tail)
+        else:
+            logs = "(no container — this deployment is not running)"
+
+    return RuntimeLogsOut(
+        deployment_id=deployment.id,
+        status=deployment.status,
+        logs=logs,
+        running=running,
+    )
+
+
+@router.get("/{deployment_id}/events", response_model=list[DeploymentEventOut])
+async def get_events(
+    deployment_id: uuid.UUID, current_user: CurrentUser, db: DbSession
+) -> list[DeploymentEventOut]:
+    """The deployment's timeline, oldest first."""
+    await _owned_deployment(db, deployment_id, current_user.id)
+    rows = (
+        await db.execute(
+            select(DeploymentEvent)
+            .where(DeploymentEvent.deployment_id == deployment_id)
+            .order_by(DeploymentEvent.created_at, DeploymentEvent.id)
+        )
+    ).scalars().all()
+    return [DeploymentEventOut.model_validate(e, from_attributes=True) for e in rows]

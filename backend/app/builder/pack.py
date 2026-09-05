@@ -18,6 +18,8 @@ import os
 import re
 import shutil
 import signal
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,19 +137,25 @@ async def check_toolchain() -> None:
     """
     preflight()
 
-    try:
-        process = await asyncio.create_subprocess_exec(
-            settings.pack_binary, "version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+    def call() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [settings.pack_binary, "version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=False,
         )
-        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=20)
-    except (OSError, asyncio.TimeoutError) as exc:
+
+    try:
+        completed = await asyncio.to_thread(call)
+    except (OSError, subprocess.SubprocessError) as exc:
         raise BuildToolError(
             f"Could not run `{settings.pack_binary} version`: {exc}"
         ) from exc
 
-    version = _parse_version(stdout.decode("utf-8", "replace"))
+    version = _parse_version((completed.stdout or "") + (completed.stderr or ""))
     if version is not None and version < MIN_PACK_VERSION:
         readable = ".".join(str(p) for p in version)
         minimum = ".".join(str(p) for p in MIN_PACK_VERSION)
@@ -160,14 +168,19 @@ async def check_toolchain() -> None:
 
 async def docker_available() -> bool:
     """True when the Docker daemon answers."""
+
+    def call() -> int:
+        return subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        ).returncode
+
     try:
-        process = await asyncio.create_subprocess_exec(
-            "docker", "info", "--format", "{{.ServerVersion}}",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        return await asyncio.wait_for(process.wait(), timeout=20) == 0
-    except (OSError, asyncio.TimeoutError):
+        return await asyncio.to_thread(call) == 0
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -207,55 +220,80 @@ async def run_pack_build(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
 
-    with log_path.open("a", encoding="utf-8") as log:
-        log.write(f"$ {' '.join(command)}\n\n")
-        log.flush()
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=log,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=str(source_path),
-                # Own process group, so a timeout can kill the whole build tree
-                # rather than leaving orphaned children behind.
-                start_new_session=True,
-            )
-        except OSError as exc:
-            message = f"Could not start the build: {exc}"
-            log.write(f"\n{message}\n")
-            return BuildOutcome(
-                succeeded=False,
-                exit_code=-1,
-                duration_seconds=time.monotonic() - started,
-                error=message,
-            )
+    def call() -> BuildOutcome:
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"$ {' '.join(command)}\n\n")
+            log.flush()
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(source_path),
+                    # Own process group, so a timeout can kill the whole build
+                    # tree rather than leaving orphaned children behind.
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                message = f"Could not start the build: {exc}"
+                log.write(f"\n{message}\n")
+                return BuildOutcome(
+                    succeeded=False,
+                    exit_code=-1,
+                    duration_seconds=time.monotonic() - started,
+                    error=message,
+                )
 
-        try:
-            exit_code = await asyncio.wait_for(process.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            _kill_process_group(process.pid)
-            await process.wait()
-            message = f"Build exceeded the {timeout}s timeout and was stopped."
-            log.write(f"\n{message}\n")
-            return BuildOutcome(
-                succeeded=False,
-                exit_code=-1,
-                duration_seconds=time.monotonic() - started,
-                timed_out=True,
-                error=message,
-            )
+            try:
+                exit_code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(process.pid)
+                process.wait()
+                message = f"Build exceeded the {timeout}s timeout and was stopped."
+                log.write(f"\n{message}\n")
+                return BuildOutcome(
+                    succeeded=False,
+                    exit_code=-1,
+                    duration_seconds=time.monotonic() - started,
+                    timed_out=True,
+                    error=message,
+                )
 
-    duration = time.monotonic() - started
-    return BuildOutcome(
-        succeeded=exit_code == 0,
-        exit_code=exit_code,
-        duration_seconds=duration,
-        error=None if exit_code == 0 else f"pack exited with code {exit_code}.",
-    )
+        return BuildOutcome(
+            succeeded=exit_code == 0,
+            exit_code=exit_code,
+            duration_seconds=time.monotonic() - started,
+            error=None if exit_code == 0 else f"pack exited with code {exit_code}.",
+        )
+
+    # On a worker thread rather than an asyncio subprocess: the asyncio
+    # subprocess API is unavailable on a Windows Selector loop, which is what a
+    # server may well be running on. See `runtime/docker.py`.
+    return await asyncio.to_thread(call)
 
 
 def _kill_process_group(pid: int) -> None:
-    """Terminate a build and everything it started. Never raises."""
+    """
+    Terminate a build and everything it started. Never raises.
+
+    POSIX kills the process group directly. Windows has neither `os.killpg`
+    nor `SIGKILL`, so `taskkill /T` is used to walk and kill the process tree
+    instead — without this branch a timed-out build raises AttributeError and
+    leaves the `pack` process and its children running.
+    """
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return
+
     try:
         os.killpg(os.getpgid(pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):

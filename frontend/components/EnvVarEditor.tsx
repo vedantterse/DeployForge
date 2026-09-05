@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Button, Skeleton } from "@/components/ui";
+import { TrashIcon } from "@/components/Icons";
 import {
   listEnvVars,
   saveEnvVars,
@@ -155,25 +157,24 @@ export default function EnvVarEditor({
 
   if (rows === null) {
     return (
-      <p className="text-sm text-[var(--muted)]">Loading environment variables…</p>
+      <div className="space-y-2">
+        <Skeleton className="h-10" />
+        <Skeleton className="h-10" />
+      </div>
     );
   }
 
   return (
     <div>
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h3 className="font-semibold">Environment variables</h3>
-          <p className="mt-1 text-sm text-[var(--muted)]">
-            Passed to the build. Values are encrypted before they are stored.
-          </p>
-        </div>
-        <button
-          onClick={() => setPasting((p) => !p)}
-          className="text-sm text-[var(--muted)] underline underline-offset-4 transition hover:text-[var(--foreground)]"
-        >
-          {pasting ? "Cancel paste" : "Paste a .env file"}
-        </button>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-[var(--text-muted)]">
+          {rows.length === 0
+            ? "None set. Many apps need none."
+            : `${rows.length} variable${rows.length === 1 ? "" : "s"}.`}
+        </p>
+        <Button size="sm" variant="ghost" onClick={() => setPasting((p) => !p)}>
+          {pasting ? "Cancel" : "Paste a .env file"}
+        </Button>
       </div>
 
       {pasting && (
@@ -182,15 +183,13 @@ export default function EnvVarEditor({
             value={pasted}
             onChange={(e) => setPasted(e.target.value)}
             rows={5}
+            spellCheck={false}
             placeholder={"DATABASE_URL=postgres://…\nDEBUG=false"}
-            className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] p-3 font-mono text-xs outline-none focus:border-[var(--accent)]"
+            className="w-full rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-3 font-[family-name:var(--font-geist-mono)] text-xs outline-none focus:border-[var(--accent)]"
           />
-          <button
-            onClick={applyPaste}
-            className="mt-2 rounded-md border border-[var(--border)] px-3 py-1.5 text-sm font-medium transition hover:bg-[var(--background)]"
-          >
+          <Button size="sm" className="mt-2" onClick={applyPaste}>
             Add {parseDotEnv(pasted).length || ""} variables
-          </button>
+          </Button>
         </div>
       )}
 
@@ -202,7 +201,7 @@ export default function EnvVarEditor({
               onChange={(e) => update(index, { key: e.target.value })}
               placeholder="KEY"
               spellCheck={false}
-              className="w-full min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-sm outline-none focus:border-[var(--accent)] sm:w-auto sm:max-w-[14rem]"
+              className="w-full min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 font-[family-name:var(--font-geist-mono)] text-sm outline-none focus:border-[var(--accent)] sm:w-auto sm:max-w-[14rem]"
             />
             <input
               value={row.value}
@@ -214,62 +213,58 @@ export default function EnvVarEditor({
                   : "value"
               }
               spellCheck={false}
-              className="w-full min-w-0 flex-[2] rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-sm outline-none focus:border-[var(--accent)]"
+              className="w-full min-w-0 flex-[2] rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 font-[family-name:var(--font-geist-mono)] text-sm outline-none focus:border-[var(--accent)]"
             />
-            <label className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--text-muted)]">
               <input
                 type="checkbox"
                 checked={row.is_secret}
                 onChange={(e) => update(index, { is_secret: e.target.checked })}
+                className="accent-[var(--accent)]"
               />
               secret
             </label>
             <button
               onClick={() => removeRow(index)}
               aria-label={`Remove ${row.key || "variable"}`}
-              className="rounded-md border border-[var(--border)] px-2.5 py-1.5 text-sm text-[var(--muted)] transition hover:border-red-300 hover:text-red-600"
+              className="rounded-[var(--radius-sm)] border border-[var(--border-strong)] p-2 text-[var(--text-dim)] transition-colors hover:border-[var(--danger)] hover:text-[var(--danger)]"
             >
-              ✕
+              <TrashIcon className="h-3.5 w-3.5" />
             </button>
           </div>
         ))}
 
         {rows.length === 0 && (
-          <p className="rounded-lg border border-dashed border-[var(--border)] p-4 text-center text-sm text-[var(--muted)]">
-            No environment variables. Many apps need none.
+          <p className="rounded-[var(--radius-sm)] border border-dashed border-[var(--border-strong)] p-5 text-center text-sm text-[var(--text-dim)]">
+            No environment variables yet.
           </p>
         )}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
-        <button
-          onClick={addRow}
-          className="rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium transition hover:bg-[var(--background)]"
-        >
-          + Add variable
-        </button>
-        <button
+        <Button size="sm" onClick={addRow}>
+          Add variable
+        </Button>
+        <Button
+          size="sm"
+          variant="primary"
+          loading={busy}
           onClick={() => void save()}
-          disabled={busy}
-          className="rounded-md bg-[var(--foreground)] px-4 py-2 text-sm font-medium text-[var(--background)] transition hover:opacity-90 disabled:opacity-50"
         >
-          {busy ? "Saving…" : "Save variables"}
-        </button>
+          Save variables
+        </Button>
 
         {saved && (
-          <span className="text-sm text-emerald-700 dark:text-emerald-300">
-            {saved}
-          </span>
+          <span className="text-sm text-[var(--ok)]">{saved}</span>
         )}
-        {error && (
-          <span className="text-sm text-red-700 dark:text-red-300">{error}</span>
-        )}
+        {error && <span className="text-sm text-[var(--danger)]">{error}</span>}
       </div>
 
-      <p className="mt-3 text-xs text-[var(--muted)]">
-        Tick <strong>secret</strong> for anything sensitive — a secret&apos;s value
-        is never sent back to the browser after it is saved, so its box shows a
-        mask and leaving it empty keeps the stored value.
+      <p className="mt-3 text-xs text-[var(--text-dim)]">
+        Tick <strong className="font-medium text-[var(--text-muted)]">secret</strong>{" "}
+        for anything sensitive — a secret&apos;s value is never sent back to the
+        browser after it is saved, so its box shows a mask and leaving it empty
+        keeps the stored value. Restart the app for changes to take effect.
       </p>
     </div>
   );

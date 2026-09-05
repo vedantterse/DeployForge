@@ -62,9 +62,47 @@ class Settings(BaseSettings):
     # Where build logs are written. Empty = alongside the repo workdir.
     build_log_dir: str = ""
 
+    # --- Image registry ---
+    # Where built images are pushed and run from. A build that only tags an
+    # image locally cannot be run on another host later; pushing to a registry
+    # is what makes the image an artifact rather than a side effect.
+    registry_host: str = "localhost:5000"
+    registry_push: bool = True
+
+    # --- Runtime ---
+    docker_binary: str = "docker"
+    # The bridge network app containers and the router share. App containers
+    # publish no host ports — the only way in is through the router.
+    edge_network: str = "deployforge_edge"
+    container_prefix: str = "df"
+    # Apps are reachable at <subdomain>.<app_domain>. Browsers resolve any
+    # *.localhost name to the loopback address with no DNS or hosts entry,
+    # which is what makes per-app URLs work on a laptop.
+    app_domain: str = "localhost"
+    router_container: str = "deployforge-traefik"
+    # Shared secret the router presents when polling for its configuration.
+    traefik_provider_token: str = "deployforge-internal"
+
+    # --- Per-app resource limits ---
+    # A student's app must not be able to take the machine down.
+    app_memory_limit: str = "512m"
+    app_cpu_limit: str = "1.0"
+    app_pids_limit: int = 256
+    # How long to wait for a started container to still be alive.
+    app_start_grace_seconds: int = 6
+
+    # --- Quotas ---
+    default_max_deployments: int = 3
+
     # --- Misc ---
     # Parent dir for temporary repo downloads. Empty = system temp.
     repo_workdir: str = ""
+
+    @property
+    def registry_prefix(self) -> str:
+        """Registry host with a trailing separator, or "" when pushing is off."""
+        host = self.registry_host.strip().rstrip("/")
+        return f"{host}/" if host and self.registry_push else ""
 
     @property
     def is_development(self) -> bool:

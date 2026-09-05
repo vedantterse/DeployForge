@@ -1,90 +1,139 @@
 # DeployForge
 
-Connect a GitHub repository and DeployForge detects how it should be built —
-Docker or a buildpack, and which framework.
+Connect a GitHub repository. DeployForge works out how it should be built,
+builds it, stores the image in a registry, and runs it in an isolated
+container behind its own URL.
+
+Built for a shared machine — a class of students deploying to one server — so
+quotas, per-app resource limits and administrator control are part of the
+design rather than an afterthought.
+
+---
+
+## How it works
+
+```
+GitHub repo ──> download ──> detect ──> build ──> registry ──> run ──> URL
+                (tarball)   (read      (Docker    (image     (container)
+                             only)      or         stored)
+                                        buildpack)
+```
+
+1. **Connect** — the student authorizes a GitHub OAuth App. The access token is
+   Fernet-encrypted before it is stored and never reaches the browser.
+2. **Detect** — the repository is downloaded as a tarball and *read*, never
+   executed. A Dockerfile means Docker; otherwise the framework is identified
+   from `package.json`, `requirements.txt`, `go.mod` and friends. A monorepo
+   gets one candidate per top-level directory, and the student chooses.
+3. **Build** — a Dockerfile is built with `docker build`; anything else with
+   Cloud Native Buildpacks (`pack`). The decision is made against the files
+   actually being built, not a stale detection row.
+4. **Store** — the image is pushed to a local registry, so what ran is a
+   retrievable artifact rather than a tag on one machine.
+5. **Run** — the image runs in a container on a private network, with no host
+   port published. A reverse proxy is the only way in.
+
+### Routing
+
+Every deployment gets a hostname: `<repo>-<id6>.localhost`. Browsers resolve
+any `*.localhost` name to the loopback address with no DNS or hosts-file entry,
+which is what makes per-app URLs work on a laptop.
+
+Traefik polls `GET /internal/traefik/config` every few seconds and rebuilds its
+routing table from the `deployments` table. That makes the database the single
+source of truth: a stopped app leaves the routing table within one poll, and no
+proxy config is ever written to disk or reloaded by hand.
+
+It also means the proxy needs **no access to the Docker socket**. Socket access
+is root-equivalent on the host, and granting it to an internet-facing process
+to save writing one endpoint would be a poor trade.
+
+### Isolation
+
+Each app container gets a memory cap, a CPU cap, a PID limit and
+`--security-opt no-new-privileges`, and publishes no host port. Accounts have a
+quota for how many apps they may run at once. Administrators can suspend an
+app, which stops it *and* prevents the owner from simply starting it again.
+
+---
 
 ## Requirements
 
-- PostgreSQL **15+** (15 is the minimum, older versions fail the migration)
-- Python **3.12+**
-- Node.js **20+**
-- **Docker** and the **`pack` CLI 0.40+** — only needed to build images
+- **Docker** — required. Runs PostgreSQL, the registry, the router, and every
+  deployed app.
+- **Python 3.12+**, **Node.js 20+**
+- **`pack` CLI 0.40+** — optional. Only needed to deploy repositories that have
+  no Dockerfile. Everything else works without it.
 
-`pack` older than 0.40 uses a Docker API version that Docker 29 rejects
-(`client version 1.38 is too old`). Check with `pack version`; install or
-upgrade from <https://buildpacks.io/docs/install-pack/>.
+`pack` older than 0.40 uses a Docker API version modern daemons reject. Check
+with `pack version`; install from <https://buildpacks.io/docs/install-pack/>.
 
-## 1. Database
+---
 
-**Linux / macOS**
+## 1. Infrastructure
 
-```bash
-sudo -u postgres psql -c "CREATE ROLE deployforge LOGIN PASSWORD 'deployforge';"
-sudo -u postgres psql -c "CREATE DATABASE deployforge OWNER deployforge;"
-```
-
-**Windows (PowerShell)** — enter the password you set when installing PostgreSQL:
-
-```powershell
-psql -U postgres -c "CREATE ROLE deployforge LOGIN PASSWORD 'deployforge';"
-psql -U postgres -c "CREATE DATABASE deployforge OWNER deployforge;"
-```
-
-## 2. Backend dependencies
-
-**Linux / macOS**
+Three containers: the database, the image registry, and the router.
 
 ```bash
-cd backend
-python3 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
+docker network create deployforge_edge
 ```
-
-**Windows (PowerShell)**
-
-```powershell
-cd backend
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-```
-
-## 3. Backend environment
-
-**Linux / macOS**
 
 ```bash
-cp .env.example .env
-./.venv/bin/python -c "import secrets; print(secrets.token_hex(32))"
-./.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+docker run -d --name deployforge-db --restart unless-stopped -e POSTGRES_USER=deployforge -e POSTGRES_PASSWORD=deployforge -e POSTGRES_DB=deployforge -p 5433:5432 -v deployforge_pgdata:/var/lib/postgresql/data postgres:17
 ```
 
-**Windows (PowerShell)**
-
-```powershell
-Copy-Item .env.example .env
-.venv\Scripts\python -c "import secrets; print(secrets.token_hex(32))"
-.venv\Scripts\python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```bash
+docker run -d --name deployforge-registry --restart unless-stopped -p 127.0.0.1:5000:5000 -v deployforge_registry:/var/lib/registry --network deployforge_edge registry:2
 ```
 
-Open `backend/.env` and set:
+```bash
+docker run -d --name deployforge-traefik --restart unless-stopped -p 80:80 -p 127.0.0.1:8090:8080 --network deployforge_edge traefik:v3.3 --api.dashboard=true --api.insecure=true --providers.http.endpoint="http://host.docker.internal:8000/internal/traefik/config?token=CHANGE_ME" --providers.http.pollInterval=5s --entrypoints.web.address=:80
+```
+
+The database is published on **5433**, not 5432, so it cannot collide with a
+PostgreSQL already running on the host. The token in the Traefik command must
+match `TRAEFIK_PROVIDER_TOKEN` in `backend/.env`.
+
+Traefik reaches the backend at `host.docker.internal`, which Docker Desktop
+provides. On Linux, add `--add-host=host.docker.internal:host-gateway`.
+
+## 2. Backend
+
+```bash
+cd backend && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+```
+
+On Linux/macOS use `.venv/bin/pip`.
+
+## 3. Configuration
+
+```bash
+cd backend && cp .env.example .env
+```
+
+Generate the two secrets:
+
+```bash
+cd backend && .venv/Scripts/python -c "import secrets; from cryptography.fernet import Fernet; print('JWT_SECRET=' + secrets.token_hex(32)); print('TOKEN_ENCRYPTION_KEY=' + Fernet.generate_key().decode())"
+```
+
+Then edit `backend/.env`:
 
 ```
-DATABASE_URL=postgresql+asyncpg://deployforge:deployforge@localhost:5432/deployforge
-JWT_SECRET=<first command's output>
-TOKEN_ENCRYPTION_KEY=<second command's output>
+DATABASE_URL=postgresql+asyncpg://deployforge:deployforge@localhost:5433/deployforge
+JWT_SECRET=<from above>
+TOKEN_ENCRYPTION_KEY=<from above>
 GITHUB_CLIENT_ID=<from step 4>
 GITHUB_CLIENT_SECRET=<from step 4>
-GITHUB_CALLBACK_URL=http://localhost:8000/github/callback
-GITHUB_OAUTH_SCOPES=repo
-FRONTEND_ORIGIN=http://localhost:3000
-APP_ENV=development
+TRAEFIK_PROVIDER_TOKEN=<same value as in the Traefik command>
 ```
 
-`.env` is gitignored. Never commit it.
+> **Never re-copy `.env.example` over a working `.env`.** It resets
+> `DATABASE_URL` to port 5432, and replacing `TOKEN_ENCRYPTION_KEY` makes every
+> stored GitHub token permanently undecryptable. Edit the lines you need.
 
-The build settings (`PACK_BINARY`, `PACK_BUILDER`, `BUILD_TIMEOUT_SECONDS`, …)
-all have working defaults — see the comments in `.env.example`. Set
-`PACK_BINARY` only if `pack` is not on the server's PATH.
+The build and runtime settings — resource limits, quotas, the registry host —
+all have working defaults. See the comments in `.env.example`.
 
 ## 4. GitHub OAuth App
 
@@ -94,97 +143,110 @@ all have working defaults — see the comments in `.env.example`. Set
 |---|---|
 | Application name | `DeployForge (local)` |
 | Homepage URL | `http://localhost:3000` |
-| Redirect URI | `http://localhost:8000/github/callback` |
-| Allow wildcard matching | off |
-| Enable Device Flow | off |
-| Expire user access tokens | **off** |
+| Authorization callback URL | `http://localhost:8000/github/callback` |
 
-Then **Generate a new client secret** (shown only once) and put the client id
-and secret in `.env`.
-
-The Redirect URI must match `GITHUB_CALLBACK_URL` exactly — port **8000**, not
-3000.
+The callback must match `GITHUB_CALLBACK_URL` exactly — port **8000**, not
+3000. Generate a client secret; it is shown once and can only ever be replaced,
+never retrieved.
 
 ## 5. Migrations
 
-From `backend/`:
-
 ```bash
-./.venv/bin/alembic upgrade head          # Linux / macOS
-.venv\Scripts\alembic upgrade head        # Windows
+cd backend && .venv/Scripts/alembic upgrade head
 ```
 
 ## 6. Admin account
 
-From `backend/`:
-
 ```bash
-./.venv/bin/python -m scripts.create_admin you@example.com     # Linux / macOS
-.venv\Scripts\python -m scripts.create_admin you@example.com   # Windows
+cd backend && .venv/Scripts/python -m scripts.create_admin you@example.com
 ```
 
-Prompts for a password. Signup through the UI always creates a normal user;
-this is the only way to make an admin.
+Signup through the UI always creates a normal user. This is the only way to
+make an admin.
 
 ## 7. Frontend
 
 ```bash
-cd ../frontend
-npm install
-cp .env.example .env.local              # Linux / macOS
-Copy-Item .env.example .env.local       # Windows
+cd frontend && npm install && cp .env.example .env.local
 ```
 
 ## 8. Run
 
 Two terminals.
 
-**Backend** — from `backend/`:
-
 ```bash
-./.venv/bin/uvicorn app.main:app --reload --port 8000       # Linux / macOS
-.venv\Scripts\uvicorn app.main:app --reload --port 8000     # Windows
+cd backend && .venv/Scripts/uvicorn app.main:app --reload --port 8000
 ```
 
-**Frontend** — from `frontend/`:
-
 ```bash
-npm run dev
+cd frontend && npm run dev
 ```
 
-Open <http://localhost:3000>.
+Open <http://localhost:3000>. <http://localhost:8000/health> should report
+`"status":"ok"` and `"database":"ok"`; the admin console shows whether Docker,
+the registry, the router and buildpacks are all reachable.
 
-Check the backend: <http://localhost:8000/health> should report
-`"status":"ok"` and `"database":"ok"`.
+`.env` changes need a backend **restart** — uvicorn's reloader only watches
+`.py` files, and settings are cached at import.
 
 ## 9. Tests
 
-From the repository root:
-
 ```bash
-backend/.venv/bin/python -m pytest backend/tests/         # Linux / macOS
-backend\.venv\Scripts\python -m pytest backend\tests\     # Windows
+backend/.venv/Scripts/python -m pytest backend/tests/
 ```
 
-Tests run against your real database inside transactions that roll back, so
-they leave no rows behind. GitHub is mocked; nothing contacts github.com.
+Tests run against the real database inside transactions that roll back, so they
+leave no rows behind. Docker and GitHub are stubbed; nothing is built, run or
+fetched.
 
 ---
 
 ## Using it
 
-Sign up → **Start new deployment** → **Authorize GitHub** → pick a repository →
-pick what inside it to deploy → see the result → add any environment variables
-→ **Build image**.
+Sign up → **Deploy new app** → **Authorize GitHub** → pick a repository → pick
+what inside it to deploy → **Build and deploy** → **Start**.
 
-Builds run in the background; the page polls and streams the log. The first
-build on a machine downloads the buildpacks builder image (~4.7 GB), so it
-takes a while. The image is left in the local Docker store — `docker images` —
-and its tag is recorded on the deployment.
+The build runs in the background and its log streams on the deployment page.
+The first buildpack build on a machine downloads a ~4.7 GB builder image, so it
+takes a while; Dockerfile builds have no such cost.
 
-For a monorepo, the target picker lists each top-level directory with what was
-detected in it, so you choose whether to deploy `frontend/`, `backend/`, or the
-whole repository.
+Two logs are kept apart on purpose:
 
-Admins see every account and their deployments on `/dashboard`. Normal users see
-their own.
+- the **build log** says why no image could be produced;
+- the **runtime log** says why the image that was produced will not stay up.
+
+Admins get two extra screens: **Accounts** (everyone, their quota, enable and
+disable) and **All apps** (every deployment, with suspend and delete).
+
+---
+
+## Layout
+
+```
+backend/
+  app/
+    api/          route handlers, including the router's config endpoint
+    auth/         JWT issuing, hashing, dependencies
+    builder/      docker build + buildpack build, orchestration, registry push
+    detection/    pure repository analysis — no network, no database
+    github/       OAuth, API client, tarball download
+    models/       SQLAlchemy tables
+    runtime/      container lifecycle, naming, port choice, reconciliation
+frontend/
+  app/            routes: landing, auth, dashboard, deployment detail, admin
+  components/     design system (ui.tsx) and feature components
+  lib/            typed API client
+```
+
+### Notes
+
+- **Reconciliation at startup.** Deployment rows outlive the process that wrote
+  them — Docker restarts, machines reboot. On boot the API checks every
+  supposedly-running deployment against Docker and corrects the ones that are
+  not, so the dashboard never claims an app is up when it is not.
+- **Compose is refused, clearly.** A `docker-compose.yml` describes several
+  services and their wiring; there is no single image to produce. DeployForge
+  says so instead of building something that is not what the file describes.
+- **Detection never executes anything.** It reads and parses files. Building
+  does run the project's own tooling — that is inherent to building source, and
+  is why builds have a hard timeout and run in their own process group.

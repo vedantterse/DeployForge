@@ -1,67 +1,171 @@
 @import "tailwindcss";
 
+/* ==========================================================================
+   DeployForge design tokens
+
+   One dark palette, defined once. The product is a control surface for
+   infrastructure — logs, statuses, terminals — so it commits to a single dark
+   theme rather than trying to be legible in two. Colours are OKLCH so that
+   lightness steps are perceptually even and a "slightly lighter panel" is
+   actually slightly lighter to the eye.
+   ========================================================================== */
+
 :root {
-  --background: #f8fafc;
-  --foreground: #0f172a;
-  --panel: #ffffff;
-  --border: #e2e8f0;
-  --muted: #64748b;
-  --accent: #4f46e5;
-  --accent-soft: #eef2ff;
+  color-scheme: dark;
+
+  /* Surfaces, darkest to lightest. Depth is built by stacking these. */
+  --bg: oklch(15% 0.02 265);
+  --surface: oklch(19% 0.022 265);
+  --surface-2: oklch(23% 0.024 265);
+  --surface-3: oklch(27% 0.026 265);
+
+  /* Hairlines. `strong` is for a border that must read as an edge. */
+  --border: oklch(30% 0.02 265);
+  --border-strong: oklch(38% 0.025 265);
+
+  /* Text, in descending prominence. */
+  --text: oklch(96% 0.005 265);
+  --text-muted: oklch(72% 0.018 265);
+  --text-dim: oklch(58% 0.02 265);
+
+  /* Brand. Violet reads as "build/deploy" without being alarming. */
+  --accent: oklch(66% 0.19 285);
+  --accent-hover: oklch(72% 0.19 285);
+  --accent-soft: oklch(30% 0.09 285);
+  --accent-text: oklch(98% 0.01 285);
+
+  /* Status. Each has a solid tone and a translucent wash for backgrounds. */
+  --ok: oklch(72% 0.17 155);
+  --ok-soft: oklch(30% 0.08 155);
+  --warn: oklch(78% 0.16 85);
+  --warn-soft: oklch(32% 0.07 85);
+  --danger: oklch(66% 0.19 25);
+  --danger-soft: oklch(30% 0.09 25);
+  --info: oklch(72% 0.14 235);
+  --info-soft: oklch(30% 0.07 235);
+
+  --radius: 0.75rem;
+  --radius-sm: 0.5rem;
+
+  /* Shadows carry the dark theme's depth; borders alone look flat. */
+  --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.4);
+  --shadow: 0 4px 16px -4px oklch(0% 0 0 / 0.5);
+  --shadow-lg: 0 16px 48px -12px oklch(0% 0 0 / 0.65);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-dim: var(--text-dim);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --radius-card: var(--radius);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #020618;
-    --foreground: #e2e8f0;
-    --panel: #0f172a;
-    --border: #1e293b;
-    --muted: #94a3b8;
-    --accent: #818cf8;
-    --accent-soft: #1e1b4b;
-  }
+* {
+  border-color: var(--border);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* --- Landing page decoration ---------------------------------------------- */
+/* Numbers in tables and metrics must line up column-wise. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
 
-/* Soft radial glow behind the hero. */
-.hero-glow {
+/* --- Focus ---------------------------------------------------------------
+   One visible focus ring everywhere, since much of this UI is keyboard-driven
+   forms and destructive buttons. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* --- Scrollbars ----------------------------------------------------------
+   Log panes are the most-scrolled surface in the product; the default
+   light-on-dark scrollbar is loud enough to distract from the text. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+  background-clip: padding-box;
+}
+
+/* --- Backdrops -----------------------------------------------------------
+   Decoration for the landing and auth pages only. Kept out of the app shell,
+   where it would compete with the data. */
+
+.aurora {
   position: absolute;
   inset: 0;
   overflow: hidden;
   pointer-events: none;
 }
-.hero-glow::before {
+.aurora::before,
+.aurora::after {
   content: "";
   position: absolute;
-  top: -18rem;
+  border-radius: 50%;
+  filter: blur(80px);
+}
+.aurora::before {
+  top: -20rem;
   left: 50%;
-  width: 60rem;
-  height: 42rem;
-  transform: translateX(-50%);
-  background: radial-gradient(
-    closest-side,
-    color-mix(in oklab, var(--accent) 22%, transparent),
-    transparent
-  );
-  filter: blur(20px);
+  width: 52rem;
+  height: 34rem;
+  transform: translateX(-60%);
+  background: radial-gradient(closest-side, var(--accent) 0%, transparent 72%);
+  opacity: 0.28;
+}
+.aurora::after {
+  top: -14rem;
+  left: 50%;
+  width: 40rem;
+  height: 28rem;
+  transform: translateX(10%);
+  background: radial-gradient(closest-side, var(--info) 0%, transparent 72%);
+  opacity: 0.18;
 }
 
-/* Faint grid, faded out towards the edges. */
 .grid-backdrop {
   position: absolute;
   inset: 0;
@@ -69,29 +173,31 @@ body {
   background-image:
     linear-gradient(to right, var(--border) 1px, transparent 1px),
     linear-gradient(to bottom, var(--border) 1px, transparent 1px);
-  background-size: 56px 56px;
-  opacity: 0.5;
-  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+  background-size: 64px 64px;
+  opacity: 0.35;
+  mask-image: radial-gradient(ellipse 75% 55% at 50% 0%, #000 30%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 75% 55% at 50% 0%, #000 30%, transparent 100%);
 }
 
-/* Gradient headline text. */
 .headline-gradient {
   background-image: linear-gradient(
     100deg,
-    var(--foreground) 20%,
-    color-mix(in oklab, var(--accent) 85%, var(--foreground)) 100%
+    var(--text) 30%,
+    color-mix(in oklab, var(--accent) 80%, var(--text)) 100%
   );
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
-/* Entrance animation, staggered by inline --delay. */
+/* --- Motion --------------------------------------------------------------
+   Entrances are staggered with an inline --delay so a list of cards resolves
+   in sequence instead of all at once. */
+
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translateY(12px);
   }
   to {
     opacity: 1;
@@ -99,25 +205,75 @@ body {
   }
 }
 .rise {
-  animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: var(--delay, 0ms);
 }
 
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--ok) 60%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+/* A live app's status dot breathes, so "running" is visible at a glance. */
+.live-dot {
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--text) 8%, transparent),
+    transparent
+  );
+  animation: shimmer 1.6s infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .rise {
+  .rise,
+  .live-dot,
+  .shimmer::after,
+  .spin {
     animation: none;
   }
 }
 
-/* Cards that lift slightly on hover. */
-.lift {
-  transition:
-    transform 0.2s ease,
-    box-shadow 0.2s ease,
-    border-color 0.2s ease;
-}
-.lift:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 12px 32px -12px rgb(15 23 42 / 0.18);
-  border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+/* --- Log panes -----------------------------------------------------------
+   Build and runtime output. Monospace, tight leading, and a dark well so a
+   200-line log stays scannable. */
+.log-pane {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.75rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2;
 }

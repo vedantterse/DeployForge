@@ -1,356 +1,393 @@
+/**
+ * The public landing page.
+ *
+ * It has one job: make it obvious what the platform does before anyone signs
+ * up. The pipeline diagram carries most of that, because "we detect, build,
+ * store and run it" is a sequence, and a sequence is easier to see than read.
+ */
+
 import Link from "next/link";
-import DetectionPreview from "@/components/DetectionPreview";
-import SiteFooter from "@/components/SiteFooter";
-import SiteHeader from "@/components/SiteHeader";
+
 import {
-  ArrowIcon,
-  CubeIcon,
-  DatabaseIcon,
+  BoxIcon,
+  CheckIcon,
+  DockerIcon,
   GitHubIcon,
+  LogoMark,
+  RocketIcon,
+  ServerIcon,
   ShieldIcon,
-  TargetIcon,
-  UsersIcon,
+  TerminalIcon,
 } from "@/components/Icons";
 
-const FEATURES = [
-  {
-    icon: GitHubIcon,
-    title: "Connect GitHub once",
-    body: "Authorize over OAuth. Your credentials never touch DeployForge — the access token is exchanged on the server and stored encrypted at rest.",
-  },
-  {
-    icon: TargetIcon,
-    title: "Pick what to deploy",
-    body: "Choose a repository, then choose the target inside it. A monorepo's frontend and backend become separate deployments instead of a guess.",
-  },
-  {
-    icon: CubeIcon,
-    title: "Docker or framework, detected",
-    body: "A Dockerfile or compose file wins. Otherwise DeployForge identifies the framework and selects a buildpack — with the evidence it matched.",
-  },
-  {
-    icon: ShieldIcon,
-    title: "Nothing is executed",
-    body: "Your code is downloaded to a temporary directory, read, and deleted. No scripts run, no build hooks fire, nothing is kept on disk.",
-  },
-  {
-    icon: DatabaseIcon,
-    title: "Every result recorded",
-    body: "Each analysis writes a deployment record: what was detected, which commit, and when. The whole platform state lives in the database.",
-  },
-  {
-    icon: UsersIcon,
-    title: "Admin and user roles",
-    body: "Users manage their own deployments. Admins see every account and everything deployed across the platform, enforced server-side.",
-  },
-];
+export const metadata = {
+  title: "DeployForge — deploy from a repository",
+  description:
+    "Connect a GitHub repository. DeployForge detects how it should be built, builds it, stores the image, and runs it behind its own URL.",
+};
 
-const STACKS = [
-  "Docker",
-  "Compose",
-  "Django",
-  "FastAPI",
-  "Flask",
-  "Next.js",
-  "React",
-  "Express",
-  "Go",
-  "Java",
-  "Ruby",
-  "PHP",
-];
-
-const STEPS = [
-  {
-    label: "Sign up",
-    detail: "Email and password. Roles are built in from the start.",
-  },
-  {
-    label: "Authorize GitHub",
-    detail: "Read access to your repositories, revocable at any time.",
-  },
-  {
-    label: "Pick a target",
-    detail: "A repository, and the directory inside it that holds the app.",
-  },
-  {
-    label: "See the verdict",
-    detail: "Docker or framework, the build method, and the files that proved it.",
-  },
-];
-
-export default function Home() {
+export default function LandingPage() {
   return (
-    <>
-      <SiteHeader />
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg)]/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+          <Link href="/" className="flex items-center gap-2.5 font-semibold tracking-tight">
+            <LogoMark className="h-8 w-8" />
+            DeployForge
+          </Link>
+          <nav className="hidden items-center gap-8 text-sm text-[var(--text-muted)] sm:flex">
+            <a href="#pipeline" className="transition-colors hover:text-[var(--text)]">
+              How it works
+            </a>
+            <a href="#features" className="transition-colors hover:text-[var(--text)]">
+              Features
+            </a>
+            <a href="#safety" className="transition-colors hover:text-[var(--text)]">
+              Isolation
+            </a>
+          </nav>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/login"
+              className="rounded-[var(--radius-sm)] px-3.5 py-2 text-sm font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+            >
+              Log in
+            </Link>
+            <Link
+              href="/signup"
+              className="rounded-[var(--radius-sm)] bg-[var(--accent)] px-3.5 py-2 text-sm font-medium text-[var(--accent-text)] transition-colors hover:bg-[var(--accent-hover)]"
+            >
+              Get started
+            </Link>
+          </div>
+        </div>
+      </header>
 
-      <main className="flex-1">
-        {/* ---------------- Hero ---------------- */}
-        <section className="relative overflow-hidden border-b border-[var(--border)]">
-          <div className="grid-backdrop" />
-          <div className="hero-glow" />
+      {/* --- Hero -------------------------------------------------------- */}
+      <section className="relative overflow-hidden px-6 pb-24 pt-20">
+        <div className="aurora" aria-hidden />
+        <div className="grid-backdrop" aria-hidden />
 
-          <div className="relative mx-auto max-w-6xl px-6 pb-20 pt-16 sm:pt-24">
-            <div className="grid items-center gap-14 lg:grid-cols-2">
-              <div>
-                <span
-                  className="rise inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)] px-3 py-1 text-xs font-medium text-[var(--muted)]"
-                  style={{ "--delay": "0ms" } as React.CSSProperties}
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  Phase 1 · Repository detection
-                </span>
+        <div className="relative z-10 mx-auto max-w-3xl text-center">
+          <span
+            className="rise inline-flex items-center gap-2 rounded-full border border-[var(--border-strong)] bg-[var(--surface)] px-3.5 py-1.5 text-xs font-medium text-[var(--text-muted)]"
+            style={{ "--delay": "0ms" } as React.CSSProperties}
+          >
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--ok)]" />
+            Push a repo, get a URL
+          </span>
 
-                <h1
-                  className="rise headline-gradient mt-6 text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-[3.4rem]"
-                  style={{ "--delay": "80ms" } as React.CSSProperties}
-                >
-                  Point it at a repository.
-                  <br />
-                  It works out how to run it.
-                </h1>
+          <h1
+            className="rise headline-gradient mt-6 text-5xl font-semibold leading-[1.05] tracking-tight sm:text-6xl"
+            style={{ "--delay": "70ms" } as React.CSSProperties}
+          >
+            Point it at a repository.
+            <br />
+            It works out how to run it.
+          </h1>
 
-                <p
-                  className="rise mt-6 max-w-xl text-lg leading-relaxed text-[var(--muted)]"
-                  style={{ "--delay": "160ms" } as React.CSSProperties}
-                >
-                  DeployForge inspects your code and decides whether it should be
-                  built with Docker or a buildpack — reading files, never running
-                  them.
-                </p>
+          <p
+            className="rise mx-auto mt-6 max-w-xl text-lg leading-relaxed text-[var(--text-muted)]"
+            style={{ "--delay": "140ms" } as React.CSSProperties}
+          >
+            DeployForge reads your code, builds it — from your Dockerfile if you
+            have one, with buildpacks if you do not — stores the image, and runs
+            it in an isolated container behind its own URL.
+          </p>
 
-                <div
-                  className="rise mt-9 flex flex-wrap items-center gap-3"
-                  style={{ "--delay": "240ms" } as React.CSSProperties}
-                >
-                  <Link
-                    href="/signup"
-                    className="group inline-flex items-center gap-2 rounded-lg bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110"
-                  >
-                    Get started
-                    <ArrowIcon className="h-4 w-4 transition group-hover:translate-x-0.5" />
-                  </Link>
-                  <Link
-                    href="/login"
-                    className="rounded-lg border border-[var(--border)] bg-[var(--panel)] px-5 py-3 text-sm font-semibold transition hover:border-[var(--accent)]"
-                  >
-                    Log in
-                  </Link>
+          <div
+            className="rise mt-9 flex flex-wrap items-center justify-center gap-3"
+            style={{ "--delay": "210ms" } as React.CSSProperties}
+          >
+            <Link
+              href="/signup"
+              className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--accent)] px-5 py-2.5 text-sm font-medium text-[var(--accent-text)] shadow-[var(--shadow)] transition-colors hover:bg-[var(--accent-hover)]"
+            >
+              <RocketIcon className="h-4 w-4" />
+              Deploy your first app
+            </Link>
+            <Link
+              href="/login"
+              className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-5 py-2.5 text-sm font-medium transition-colors hover:bg-[var(--surface-2)]"
+            >
+              I already have an account
+            </Link>
+          </div>
+        </div>
+
+        {/* A mock of the real deployment card. */}
+        <div
+          className="rise relative z-10 mx-auto mt-16 max-w-3xl"
+          style={{ "--delay": "280ms" } as React.CSSProperties}
+        >
+          <div className="overflow-hidden rounded-[var(--radius)] border border-[var(--border-strong)] bg-[var(--surface)] shadow-[var(--shadow-lg)]">
+            <div className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
+              <span className="h-2.5 w-2.5 rounded-full bg-[var(--danger)]/70" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[var(--warn)]/70" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[var(--ok)]/70" />
+              <span className="ml-3 font-[family-name:var(--font-geist-mono)] text-xs text-[var(--text-dim)]">
+                deployforge — my apps
+              </span>
+            </div>
+            <div className="space-y-3 p-5 text-left">
+              <MockRow
+                name="octocat/portfolio"
+                meta="Dockerfile · nginx"
+                url="portfolio-a1b2c3.localhost"
+                state="running"
+              />
+              <MockRow
+                name="octocat/notes-api (backend/)"
+                meta="Buildpack · FastAPI"
+                url="notes-api-backend-9f21e4.localhost"
+                state="running"
+              />
+              <MockRow
+                name="octocat/dashboard"
+                meta="Buildpack · Next.js"
+                state="building"
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* --- Pipeline ---------------------------------------------------- */}
+      <section id="pipeline" className="border-t border-[var(--border)] px-6 py-24">
+        <div className="mx-auto max-w-5xl">
+          <div className="mx-auto max-w-2xl text-center">
+            <h2 className="text-3xl font-semibold tracking-tight">
+              From repository to running app
+            </h2>
+            <p className="mt-3 text-[var(--text-muted)]">
+              Five steps, each one visible while it happens and inspectable when
+              it fails.
+            </p>
+          </div>
+
+          <ol className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-5">
+            {[
+              {
+                icon: <GitHubIcon className="h-5 w-5" />,
+                title: "Connect",
+                body: "Authorize GitHub. The token is encrypted on the server and never reaches your browser.",
+              },
+              {
+                icon: <TerminalIcon className="h-5 w-5" />,
+                title: "Detect",
+                body: "The repository is read — never executed — to find a Dockerfile or identify the framework.",
+              },
+              {
+                icon: <DockerIcon className="h-5 w-5" />,
+                title: "Build",
+                body: "Your Dockerfile if you have one; Cloud Native Buildpacks if you do not.",
+              },
+              {
+                icon: <BoxIcon className="h-5 w-5" />,
+                title: "Store",
+                body: "The image is pushed to the registry, so it is an artifact you can roll back to.",
+              },
+              {
+                icon: <ServerIcon className="h-5 w-5" />,
+                title: "Run",
+                body: "Started in an isolated container and published at its own URL through the router.",
+              },
+            ].map((step, i) => (
+              <li
+                key={step.title}
+                className="rise rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-5"
+                style={{ "--delay": `${i * 70}ms` } as React.CSSProperties}
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-soft)] text-[var(--accent)]">
+                  {step.icon}
                 </div>
-
-                <p
-                  className="rise mt-6 text-xs text-[var(--muted)]"
-                  style={{ "--delay": "320ms" } as React.CSSProperties}
-                >
-                  No deployment yet — Phase 1 understands the input. Building and
-                  running come next.
+                <h3 className="mt-4 font-semibold">
+                  <span className="mr-1.5 text-[var(--text-dim)]">{i + 1}.</span>
+                  {step.title}
+                </h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-[var(--text-muted)]">
+                  {step.body}
                 </p>
-              </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </section>
 
+      {/* --- Features ---------------------------------------------------- */}
+      <section
+        id="features"
+        className="border-t border-[var(--border)] bg-[var(--surface)]/40 px-6 py-24"
+      >
+        <div className="mx-auto max-w-5xl">
+          <div className="mx-auto max-w-2xl text-center">
+            <h2 className="text-3xl font-semibold tracking-tight">
+              Everything the deploy actually needs
+            </h2>
+          </div>
+
+          <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              {
+                title: "Monorepos, handled",
+                body: "A repository with a frontend and a backend has two right answers. DeployForge lists every deployable directory and lets you choose.",
+              },
+              {
+                title: "Two logs, kept apart",
+                body: "The build log says why no image was produced. The runtime log says why the app will not stay up. Conflating them is what makes platforms frustrating.",
+              },
+              {
+                title: "Encrypted configuration",
+                body: "Environment variables are encrypted at rest and injected at build and run time. Secrets are never sent back to the browser.",
+              },
+              {
+                title: "A URL per app",
+                body: "Every deployment gets its own hostname. Ten apps can all listen on port 3000 and none of them collide.",
+              },
+              {
+                title: "Images you keep",
+                body: "Every build is pushed to a registry, so what ran is a stored artifact rather than a tag that exists on one machine.",
+              },
+              {
+                title: "A full history",
+                body: "Download, build, push, start, stop — every step is recorded, so a failure points at the stage that caused it.",
+              },
+            ].map((feature, i) => (
               <div
-                className="rise"
-                style={{ "--delay": "200ms" } as React.CSSProperties}
+                key={feature.title}
+                className="rise rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-5"
+                style={{ "--delay": `${i * 55}ms` } as React.CSSProperties}
               >
-                <DetectionPreview />
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- Stack strip ---------------- */}
-        <section className="border-b border-[var(--border)] bg-[var(--panel)]">
-          <div className="mx-auto max-w-6xl px-6 py-8">
-            <p className="text-center text-xs font-medium uppercase tracking-widest text-[var(--muted)]">
-              Recognizes
-            </p>
-            <div className="mt-5 flex flex-wrap justify-center gap-2.5">
-              {STACKS.map((stack) => (
-                <span
-                  key={stack}
-                  className="rounded-full border border-[var(--border)] px-3.5 py-1.5 text-sm text-[var(--muted)]"
-                >
-                  {stack}
-                </span>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- Features ---------------- */}
-        <section id="features" className="mx-auto max-w-6xl scroll-mt-20 px-6 py-20">
-          <div className="max-w-2xl">
-            <h2 className="text-3xl font-bold tracking-tight">What it does</h2>
-            <p className="mt-3 text-[var(--muted)]">
-              Six things DeployForge gets right before a single container is ever
-              built.
-            </p>
-          </div>
-
-          <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {FEATURES.map(({ icon: Icon, title, body }) => (
-              <div
-                key={title}
-                className="lift rounded-2xl border border-[var(--border)] bg-[var(--panel)] p-6"
-              >
-                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
-                  <Icon />
-                </span>
-                <h3 className="mt-4 font-semibold">{title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
-                  {body}
+                <div className="flex items-center gap-2 text-[var(--accent)]">
+                  <CheckIcon className="h-4 w-4" />
+                  <h3 className="font-semibold text-[var(--text)]">
+                    {feature.title}
+                  </h3>
+                </div>
+                <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
+                  {feature.body}
                 </p>
               </div>
             ))}
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* ---------------- How it works ---------------- */}
-        <section
-          id="how"
-          className="scroll-mt-20 border-y border-[var(--border)] bg-[var(--panel)]"
-        >
-          <div className="mx-auto max-w-6xl px-6 py-20">
-            <div className="grid gap-14 lg:grid-cols-2">
-              <div>
-                <h2 className="text-3xl font-bold tracking-tight">How it works</h2>
-                <p className="mt-3 text-[var(--muted)]">
-                  Four steps from a blank account to a stored verdict.
-                </p>
+      {/* --- Isolation --------------------------------------------------- */}
+      <section id="safety" className="border-t border-[var(--border)] px-6 py-24">
+        <div className="mx-auto grid max-w-5xl gap-12 lg:grid-cols-2 lg:items-center">
+          <div>
+            <div className="inline-flex h-11 w-11 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-soft)] text-[var(--accent)]">
+              <ShieldIcon className="h-5 w-5" />
+            </div>
+            <h2 className="mt-5 text-3xl font-semibold tracking-tight">
+              One machine, many students
+            </h2>
+            <p className="mt-4 leading-relaxed text-[var(--text-muted)]">
+              Every app runs in its own container on a shared private network,
+              with no port published to the host. The router is the only way in,
+              and it only knows about apps that are supposed to be running.
+            </p>
+            <p className="mt-3 leading-relaxed text-[var(--text-muted)]">
+              Each container is capped on memory, CPU and process count, and
+              cannot gain privileges. One runaway app cannot take the machine
+              down for the rest of the class — and an administrator can suspend
+              any app without touching the others.
+            </p>
+          </div>
 
-                <ol className="mt-10 space-y-8">
-                  {STEPS.map((step, index) => (
-                    <li key={step.label} className="relative flex gap-4 pl-1">
-                      {index < STEPS.length - 1 && (
-                        <span
-                          className="absolute left-[1.05rem] top-9 h-full w-px bg-[var(--border)]"
-                          aria-hidden
-                        />
-                      )}
-                      <span className="relative z-10 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--background)] text-sm font-semibold">
-                        {index + 1}
-                      </span>
-                      <div className="pt-1">
-                        <h3 className="font-semibold">{step.label}</h3>
-                        <p className="mt-1 text-sm text-[var(--muted)]">
-                          {step.detail}
-                        </p>
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-
-              {/* What the detector actually looks at */}
-              <div className="rounded-2xl border border-[var(--border)] bg-[var(--background)] p-1">
-                <div className="rounded-xl bg-[var(--panel)] p-5 font-mono text-xs leading-relaxed">
-                  <p className="text-[var(--muted)]">
-                    # what the detector looks for, in order
-                  </p>
-                  <div className="mt-4 space-y-2.5">
-                    {[
-                      ["Dockerfile", "→ docker", true],
-                      ["docker-compose.yml", "→ docker + compose", true],
-                      ["package.json", "→ next / react / express", false],
-                      ["requirements.txt", "→ django / fastapi / flask", false],
-                      ["pyproject.toml, manage.py", "→ python", false],
-                      ["go.mod, pom.xml, Gemfile", "→ go / java / ruby", false],
-                    ].map(([file, verdict, isDocker]) => (
-                      <div key={file as string} className="flex flex-wrap items-baseline gap-2">
-                        <span
-                          className={
-                            isDocker
-                              ? "text-sky-600 dark:text-sky-400"
-                              : "text-emerald-600 dark:text-emerald-400"
-                          }
-                        >
-                          {file}
-                        </span>
-                        <span className="text-[var(--muted)]">{verdict}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-5 border-t border-[var(--border)] pt-4 text-[var(--muted)]">
-                    no match → unknown, with a reason. never an exception.
-                  </p>
+          <div className="space-y-3">
+            {[
+              ["Per-app memory and CPU limits", "512 MB and one core by default"],
+              ["No new privileges", "containers cannot escalate"],
+              ["No published host ports", "reachable only through the router"],
+              ["Per-account quotas", "how many apps one student may run at once"],
+              ["Admin suspend", "stops an app the owner cannot simply restart"],
+            ].map(([title, body]) => (
+              <div
+                key={title}
+                className="flex items-start gap-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3"
+              >
+                <CheckIcon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--ok)]" />
+                <div>
+                  <p className="text-sm font-medium">{title}</p>
+                  <p className="text-xs text-[var(--text-dim)]">{body}</p>
                 </div>
               </div>
-            </div>
+            ))}
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* ---------------- Safety ---------------- */}
-        <section id="safety" className="mx-auto max-w-6xl scroll-mt-20 px-6 py-20">
-          <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]">
-            <div className="grid gap-10 p-8 sm:p-12 lg:grid-cols-[1.1fr_1fr]">
-              <div>
-                <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
-                  <ShieldIcon className="h-6 w-6" />
-                </span>
-                <h2 className="mt-5 text-2xl font-bold tracking-tight">
-                  Your code is read, never run
-                </h2>
-                <p className="mt-3 leading-relaxed text-[var(--muted)]">
-                  Detection is pure filesystem inspection. DeployForge downloads an
-                  archive rather than cloning, so no credential helper, submodule
-                  or hook is ever invoked — and the download is deleted before the
-                  response returns.
-                </p>
-              </div>
+      {/* --- CTA --------------------------------------------------------- */}
+      <section className="border-t border-[var(--border)] px-6 py-20">
+        <div className="mx-auto max-w-2xl text-center">
+          <h2 className="text-3xl font-semibold tracking-tight">
+            Deploy something in the next five minutes
+          </h2>
+          <p className="mt-3 text-[var(--text-muted)]">
+            Create an account, connect GitHub, pick a repository. That is the
+            whole setup.
+          </p>
+          <Link
+            href="/signup"
+            className="mt-8 inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--accent)] px-5 py-2.5 text-sm font-medium text-[var(--accent-text)] shadow-[var(--shadow)] transition-colors hover:bg-[var(--accent-hover)]"
+          >
+            <RocketIcon className="h-4 w-4" />
+            Get started
+          </Link>
+        </div>
+      </section>
 
-              <ul className="space-y-3 text-sm">
-                {[
-                  "Archive download — not git clone, so nothing is configured or executed",
-                  "Extraction blocks path traversal, symlinks and device files",
-                  "Size and file-count caps stop a hostile archive filling the disk",
-                  "Temporary directory removed in a finally, even when a request fails",
-                  "GitHub tokens encrypted with Fernet; never sent to the browser",
-                  "The client secret and token exchange stay on the server",
-                ].map((item) => (
-                  <li key={item} className="flex gap-3">
-                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-xs text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                      ✓
-                    </span>
-                    <span className="text-[var(--muted)]">{item}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </section>
+      <footer className="border-t border-[var(--border)] px-6 py-8">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 text-sm text-[var(--text-dim)]">
+          <span className="flex items-center gap-2">
+            <LogoMark className="h-6 w-6" />
+            DeployForge
+          </span>
+          <span>Building and running student projects, one repository at a time.</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
 
-        {/* ---------------- Closing CTA ---------------- */}
-        <section className="mx-auto max-w-6xl px-6 pb-24">
-          <div className="relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)] px-8 py-14 text-center">
-            <div className="hero-glow opacity-70" />
-            <div className="relative">
-              <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
-                Ready to try it?
-              </h2>
-              <p className="mx-auto mt-3 max-w-md text-[var(--muted)]">
-                Create an account, connect GitHub, and pick a repository. It takes
-                about a minute.
-              </p>
-              <div className="mt-8 flex flex-wrap justify-center gap-3">
-                <Link
-                  href="/signup"
-                  className="group inline-flex items-center gap-2 rounded-lg bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110"
-                >
-                  Sign up
-                  <ArrowIcon className="h-4 w-4 transition group-hover:translate-x-0.5" />
-                </Link>
-                <Link
-                  href="/login"
-                  className="rounded-lg border border-[var(--border)] px-5 py-3 text-sm font-semibold transition hover:border-[var(--accent)]"
-                >
-                  Log in
-                </Link>
-              </div>
-            </div>
-          </div>
-        </section>
-      </main>
+/* --- Hero mock ---------------------------------------------------------- */
 
-      <SiteFooter />
-    </>
+function MockRow({
+  name,
+  meta,
+  url,
+  state,
+}: {
+  name: string;
+  meta: string;
+  url?: string;
+  state: "running" | "building";
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium">{name}</p>
+        <p className="mt-0.5 text-xs text-[var(--text-dim)]">{meta}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-3">
+        {url && (
+          <span className="hidden font-[family-name:var(--font-geist-mono)] text-xs text-[var(--ok)] sm:block">
+            {url}
+          </span>
+        )}
+        {state === "running" ? (
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--ok)]/30 bg-[var(--ok-soft)] px-2.5 py-0.5 text-xs font-medium text-[var(--ok)]">
+            <span className="live-dot inline-block h-2 w-2 rounded-full bg-[var(--ok)]" />
+            Running
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--info)]/30 bg-[var(--info-soft)] px-2.5 py-0.5 text-xs font-medium text-[var(--info)]">
+            Building
+          </span>
+        )}
+      </div>
+    </div>
   );
 }

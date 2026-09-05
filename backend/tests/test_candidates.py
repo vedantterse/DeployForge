@@ -97,7 +97,12 @@ def test_files_at_the_root_are_not_candidates(tmp_path):
 def test_symlinked_directories_are_skipped(tmp_path):
     """Following a symlink could lead outside the downloaded tree."""
     _write(tmp_path, "real/package.json", "{}")
-    (tmp_path / "linked").symlink_to(tmp_path / "real", target_is_directory=True)
+    try:
+        (tmp_path / "linked").symlink_to(tmp_path / "real", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        # Windows only allows this to an administrator or with Developer Mode
+        # enabled. Without a symlink there is nothing to assert.
+        pytest.skip(f"Cannot create a symlink on this system: {exc}")
     assert "linked" not in {c.path for c in scan_candidates(tmp_path)}
 
 

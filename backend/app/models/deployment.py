@@ -16,13 +16,14 @@ from typing import TYPE_CHECKING
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
+    from app.models.event import DeploymentEvent
     from app.models.repository import Repository
     from app.models.user import User
 
@@ -36,18 +37,44 @@ class DeploymentStatus(str, enum.Enum):
     ANALYZED = "analyzed"
     QUEUED = "queued"
     BUILDING = "building"
+    # The image is being pushed to the registry after a successful build.
+    PUSHING = "pushing"
     # The image exists but nothing is running yet. SCHEMA.md's original enum
     # went straight from `building` to `running`, which left no way to say
     # "built successfully, not yet started".
     BUILT = "built"
+    # The container has been created and is being health-checked.
+    STARTING = "starting"
     RUNNING = "running"
     LIVE = "live"
+    # Ran successfully and was deliberately stopped — by the owner or an admin.
+    STOPPED = "stopped"
     FAILED = "failed"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {DeploymentStatus.BUILT, DeploymentStatus.LIVE,
-                        DeploymentStatus.FAILED}
+        """No background work is in flight; the user decides what happens next."""
+        return self in {
+            DeploymentStatus.BUILT,
+            DeploymentStatus.LIVE,
+            DeploymentStatus.RUNNING,
+            DeploymentStatus.STOPPED,
+            DeploymentStatus.FAILED,
+        }
+
+    @property
+    def is_busy(self) -> bool:
+        """A background task owns this deployment; refuse to start another."""
+        return self in {
+            DeploymentStatus.QUEUED,
+            DeploymentStatus.BUILDING,
+            DeploymentStatus.PUSHING,
+            DeploymentStatus.STARTING,
+        }
+
+    @property
+    def is_running(self) -> bool:
+        return self in {DeploymentStatus.RUNNING, DeploymentStatus.LIVE}
 
 
 class Deployment(Base, UUIDMixin, TimestampMixin):
@@ -100,15 +127,47 @@ class Deployment(Base, UUIDMixin, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
 
-    # --- Infrastructure columns: filled by later phases ---
-    subdomain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # --- Runtime ---
+    # The host label the app answers on, e.g. "todo-a1b2c3d4" reachable at
+    # todo-a1b2c3d4.localhost. Unique platform-wide: it is a routing key.
+    subdomain: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
     container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    container_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The port the app listens on *inside* its container. Read from the image's
+    # EXPOSE, else inferred from the framework, else a default.
+    app_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    runtime_stopped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Set when an admin stopped it, so the owner cannot simply start it again.
+    suspended_by_admin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     target_server_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     logs_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     repository: Mapped["Repository"] = relationship(back_populates="deployments")
     user: Mapped["User"] = relationship(back_populates="deployments")
+    events: Mapped[list["DeploymentEvent"]] = relationship(
+        back_populates="deployment",
+        cascade="all, delete-orphan",
+        order_by="DeploymentEvent.created_at",
+    )
+
+    @property
+    def url(self) -> str | None:
+        """Where the app answers, once it has a subdomain."""
+        from app.config import settings
+
+        if not self.subdomain:
+            return None
+        return f"http://{self.subdomain}.{settings.app_domain}"
 
     def __repr__(self) -> str:
         return f"<Deployment {self.id} status={self.status.value}>"

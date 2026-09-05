@@ -2,19 +2,23 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+
+import AppShell from "@/components/AppShell";
+import { Skeleton } from "@/components/ui";
 import { getCurrentUser, type User } from "@/lib/auth";
-import NavBar from "@/components/NavBar";
 
 /**
  * Wraps the authenticated area: resolves the current user from /auth/me and
  * sends anonymous visitors to the login page.
  *
  * This is convenience, not security — the backend rejects unauthenticated and
- * under-privileged requests regardless of what the browser renders.
+ * under-privileged requests regardless of what the browser chooses to render.
  */
 export default function RequireAuth({
+  adminOnly = false,
   children,
 }: {
+  adminOnly?: boolean;
   children: (user: User) => React.ReactNode;
 }) {
   const router = useRouter();
@@ -29,26 +33,37 @@ export default function RequireAuth({
         router.replace("/login");
         return;
       }
+      if (adminOnly && u.role !== "admin") {
+        router.replace("/dashboard");
+        return;
+      }
       setUser(u);
       setChecked(true);
     });
     return () => {
       active = false;
     };
-  }, [router]);
+  }, [router, adminOnly]);
 
   if (!checked || !user) {
+    // A skeleton in the final layout, so the page does not jump when it loads.
     return (
-      <main className="flex flex-1 items-center justify-center p-8 text-sm text-slate-500">
-        Loading…
-      </main>
+      <div className="flex min-h-screen">
+        <div className="hidden w-60 shrink-0 border-r border-[var(--border)] bg-[var(--surface)] lg:block" />
+        <div className="flex-1 px-8 py-8">
+          <div className="mx-auto w-full max-w-6xl space-y-6">
+            <Skeleton className="h-9 w-56" />
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {[0, 1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-24" />
+              ))}
+            </div>
+            <Skeleton className="h-64" />
+          </div>
+        </div>
+      </div>
     );
   }
 
-  return (
-    <>
-      <NavBar user={user} />
-      {children(user)}
-    </>
-  );
+  return <AppShell user={user}>{children(user)}</AppShell>;
 }

@@ -8,6 +8,7 @@ Importing this package imports every model, which registers all four tables on
 from app.models.base import Base, TimestampMixin, UUIDMixin
 from app.models.deployment import BuildMethod, Deployment, DeploymentStatus
 from app.models.environment import EnvironmentVariable
+from app.models.event import DeploymentEvent, EventLevel
 from app.models.github import GitHubConnection
 from app.models.repository import DetectedType, Repository
 from app.models.user import User, UserRole
@@ -25,4 +26,6 @@ __all__ = [
     "BuildMethod",
     "EnvironmentVariable",
     "DeploymentStatus",
+    "DeploymentEvent",
+    "EventLevel",
 ]
