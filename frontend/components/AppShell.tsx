@@ -1,9 +1,10 @@
 /**
- * The frame around every signed-in page: sidebar, top bar, content column.
+ * The frame around every signed-in page.
  *
- * A sidebar rather than a top-nav because the product has two distinct modes —
- * a student managing their own apps, and an admin watching everyone's — and a
- * persistent rail makes which one you are in unambiguous.
+ * The navigation is built from the account's role, not filtered in the view:
+ * an administrator runs the platform and does not deploy on it, so "Deploy
+ * new" is not a link they see greyed out — it is not part of their product at
+ * all. Two roles, two applications, one shell.
  */
 
 "use client";
@@ -16,6 +17,7 @@ import { clearToken, type User } from "@/lib/auth";
 import { Badge, cx } from "@/components/ui";
 import {
   BoxIcon,
+  ChartIcon,
   LogoMark,
   RocketIcon,
   ServerIcon,
@@ -27,15 +29,19 @@ type NavItem = {
   href: string;
   label: string;
   icon: ReactNode;
-  adminOnly?: boolean;
   exact?: boolean;
 };
 
-const NAV: NavItem[] = [
+const STUDENT_NAV: NavItem[] = [
   { href: "/dashboard", label: "My apps", icon: <BoxIcon />, exact: true },
   { href: "/dashboard/new", label: "Deploy new", icon: <RocketIcon /> },
-  { href: "/admin", label: "Accounts", icon: <UsersIcon />, adminOnly: true, exact: true },
-  { href: "/admin/deployments", label: "All apps", icon: <ServerIcon />, adminOnly: true },
+];
+
+const ADMIN_NAV: NavItem[] = [
+  { href: "/admin", label: "Overview", icon: <ChartIcon />, exact: true },
+  { href: "/admin/students", label: "Students", icon: <UsersIcon /> },
+  { href: "/admin/deployments", label: "Projects", icon: <BoxIcon /> },
+  { href: "/admin/infrastructure", label: "Infrastructure", icon: <ServerIcon /> },
 ];
 
 export default function AppShell({
@@ -47,44 +53,50 @@ export default function AppShell({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const isAdmin = user.role === "admin";
+  const items = isAdmin ? ADMIN_NAV : STUDENT_NAV;
 
   function logOut() {
     clearToken();
     router.push("/login");
   }
 
-  const items = NAV.filter((i) => !i.adminOnly || user.role === "admin");
+  function isActive(item: NavItem) {
+    return item.exact ? pathname === item.href : pathname.startsWith(item.href);
+  }
 
   return (
     <div className="flex min-h-screen">
       {/* --- Sidebar ---------------------------------------------------- */}
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
+      <aside className="hidden w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--surface)] lg:flex">
         <div className="flex h-16 items-center gap-2.5 border-b border-[var(--border)] px-5">
           <LogoMark className="h-8 w-8" />
-          <span className="font-semibold tracking-tight">DeployForge</span>
+          <div className="min-w-0">
+            <p className="truncate font-semibold leading-tight tracking-tight">
+              DeployForge
+            </p>
+            <p className="text-[11px] leading-tight text-[var(--text-dim)]">
+              {isAdmin ? "Platform administration" : "Deployment platform"}
+            </p>
+          </div>
         </div>
 
         <nav className="flex-1 space-y-1 p-3">
-          {items.map((item) => {
-            const active = item.exact
-              ? pathname === item.href
-              : pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cx(
-                  "flex items-center gap-3 rounded-[var(--radius-sm)] px-3 py-2 text-sm font-medium transition-colors",
-                  active
-                    ? "bg-[var(--accent-soft)] text-[var(--accent)]"
-                    : "text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]",
-                )}
-              >
-                {item.icon}
-                {item.label}
-              </Link>
-            );
-          })}
+          {items.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={cx(
+                "flex items-center gap-3 rounded-[var(--radius-sm)] px-3 py-2 text-sm font-medium transition-colors",
+                isActive(item)
+                  ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                  : "text-[var(--text-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--text)]",
+              )}
+            >
+              {item.icon}
+              {item.label}
+            </Link>
+          ))}
         </nav>
 
         <div className="border-t border-[var(--border)] p-3">
@@ -93,10 +105,10 @@ export default function AppShell({
               {user.email}
             </p>
             <div className="mt-1.5 flex items-center justify-between">
-              {user.role === "admin" ? (
+              {isAdmin ? (
                 <Badge tone="accent">
                   <ShieldIcon className="h-3 w-3" />
-                  Admin
+                  Administrator
                 </Badge>
               ) : (
                 <Badge>Student</Badge>
@@ -114,9 +126,11 @@ export default function AppShell({
 
       {/* --- Content ---------------------------------------------------- */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Mobile bar: the sidebar collapses away below lg. */}
         <header className="flex h-16 items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--surface)] px-4 lg:hidden">
-          <Link href="/dashboard" className="flex items-center gap-2 font-semibold">
+          <Link
+            href={isAdmin ? "/admin" : "/dashboard"}
+            className="flex items-center gap-2 font-semibold"
+          >
             <LogoMark className="h-7 w-7" />
             DeployForge
           </Link>
@@ -129,26 +143,21 @@ export default function AppShell({
         </header>
 
         <nav className="flex gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 lg:hidden">
-          {items.map((item) => {
-            const active = item.exact
-              ? pathname === item.href
-              : pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cx(
-                  "flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium",
-                  active
-                    ? "bg-[var(--accent-soft)] text-[var(--accent)]"
-                    : "text-[var(--text-muted)]",
-                )}
-              >
-                {item.icon}
-                {item.label}
-              </Link>
-            );
-          })}
+          {items.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={cx(
+                "flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium",
+                isActive(item)
+                  ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                  : "text-[var(--text-muted)]",
+              )}
+            >
+              {item.icon}
+              {item.label}
+            </Link>
+          ))}
         </nav>
 
         <main className="flex-1 px-4 py-8 sm:px-8">

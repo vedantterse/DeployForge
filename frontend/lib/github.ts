@@ -40,6 +40,11 @@ export type GitHubRepo = {
   html_url: string;
   private: boolean;
   updated_at: string | null;
+  /** True when this account has already connected a target from this repo. */
+  connected: boolean;
+  /** Which targets are taken. "" means the whole repository. */
+  connected_paths: string[];
+  deployment_id: string | null;
 };
 
 export type ConnectedRepo = {
@@ -67,7 +72,7 @@ export type DetectionResult = {
   type: DetectedType;
   framework: string | null;
   compose: boolean;
-  build_method: "docker" | "buildpack" | null;
+  build_method: "docker" | "buildpack" | "compose" | null;
   evidence: string[];
   reason: string | null;
   commit_sha: string | null;
@@ -125,9 +130,12 @@ export type Candidate = {
   type: DetectedType;
   framework: string | null;
   compose: boolean;
-  build_method: "docker" | "buildpack" | null;
+  build_method: "docker" | "buildpack" | "compose" | null;
   evidence: string[];
   reason: string | null;
+  /** Already connected by this account — it cannot be deployed twice. */
+  already_connected: boolean;
+  deployment_id: string | null;
 };
 
 export type ScanResult = {
@@ -168,10 +176,12 @@ export function selectTarget(
 /** One-line summary of a candidate, for the picker. */
 export function describeCandidate(candidate: Candidate): string {
   if (candidate.type === "docker") {
-    return candidate.compose ? "Docker Compose" : "Dockerfile";
+    return candidate.compose
+      ? "Docker Compose — every service in the file is started"
+      : "Dockerfile";
   }
   if (candidate.type === "framework") {
-    return frameworkName(candidate.framework);
+    return `${frameworkName(candidate.framework)} — built with buildpacks`;
   }
   return "Nothing recognized here";
 }

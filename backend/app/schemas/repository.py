@@ -29,6 +29,11 @@ class CandidateOut(BaseModel):
     build_method: BuildMethod | None = None
     evidence: list[str] = Field(default_factory=list)
     reason: str | None = None
+    # True when this exact target is already connected by this account. The
+    # picker greys it out instead of letting the user choose it and hit a
+    # unique-constraint error on the next request.
+    already_connected: bool = False
+    deployment_id: uuid.UUID | None = None
 
 
 class ScanOut(BaseModel):

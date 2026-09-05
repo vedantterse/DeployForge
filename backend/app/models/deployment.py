@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 class BuildMethod(str, enum.Enum):
     DOCKER = "docker"
     BUILDPACK = "buildpack"
+    # A multi-service stack started from the repository's compose file.
+    COMPOSE = "compose"
 
 
 class DeploymentStatus(str, enum.Enum):
@@ -144,10 +147,19 @@ class Deployment(Base, UUIDMixin, TimestampMixin):
     runtime_stopped_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Set when an admin stopped it, so the owner cannot simply start it again.
+    # Set when an admin stopped it, so the owner cannot simply start it again —
+    # nor delete it and reconnect the same repository to get a clean one.
     suspended_by_admin: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    suspension_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # --- Compose deployments ---
+    # A compose stack is several containers, not one. `container_name` still
+    # holds the service that receives traffic; these record the rest so the
+    # whole stack can be stopped, inspected and torn down as a unit.
+    compose_project: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    compose_services: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     target_server_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     logs_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

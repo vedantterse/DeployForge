@@ -25,12 +25,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.crypto import decrypt_value
 from app.core.errors import AppError
-from app.models.deployment import Deployment, DeploymentStatus
+from app.models.deployment import BuildMethod, Deployment, DeploymentStatus
 from app.models.environment import EnvironmentVariable
 from app.models.event import DeploymentEvent, EventLevel
 from app.models.repository import Repository
 from app.models.user import User
-from app.runtime import docker, naming, ports
+from app.runtime import compose, docker, naming, ports
 
 logger = logging.getLogger(__name__)
 
@@ -171,14 +171,26 @@ async def start(
     attempt is an implementation detail the student should not have to know
     about.
     """
-    if deployment.image_ref is None:
+    is_compose = deployment.build_method is BuildMethod.COMPOSE
+
+    if not is_compose and deployment.image_ref is None:
         raise RuntimeError_(
             "This deployment has no image yet. Build it before starting it."
         )
+    if is_compose and not deployment.compose_project:
+        raise RuntimeError_(
+            "This stack has not been prepared yet. Build it before starting it."
+        )
     if deployment.suspended_by_admin and actor != "admin":
         raise RuntimeError_(
-            "An administrator has suspended this deployment. Contact them to "
+            deployment.suspension_reason
+            or "An administrator has suspended this deployment. Contact them to "
             "have it resumed."
+        )
+    if not user.can_deploy and actor != "admin":
+        raise RuntimeError_(
+            user.deploy_block_reason
+            or "An administrator has revoked your permission to deploy."
         )
 
     await check_quota(db, user, excluding=deployment.id)
@@ -195,54 +207,16 @@ async def start(
             repository_name=repository.name,
             deploy_path=repository.deploy_path,
         )
-    container = deployment.container_name or naming.container_name_for(deployment.id)
-    deployment.container_name = container
-
     env = await environment_for(db, repository.id)
-    exposed = await docker.image_exposed_ports(deployment.image_ref)
-    port = ports.choose_port(
-        exposed_ports=exposed,
-        env=env,
-        framework=repository.detected_framework,
-        build_method=deployment.build_method.value if deployment.build_method else None,
-    )
-    deployment.app_port = port
 
     deployment.status = DeploymentStatus.STARTING
     deployment.error_message = None
     await db.commit()
 
-    await record(
-        db,
-        deployment.id,
-        "start",
-        f"Starting {deployment.image_ref} on port {port}.",
-        actor=actor,
-    )
-
-    # A container from a previous run would take the name; replace it.
-    await docker.remove_container(container)
-
-    # Buildpack launchers and most frameworks read PORT. Setting it makes the
-    # app listen where the router expects, instead of hoping the two agree.
-    run_env = {"PORT": str(port), **env}
-
-    result = await docker.run_container(
-        name=container,
-        image_ref=deployment.image_ref,
-        port=port,
-        env=run_env,
-        labels={
-            "deployforge.deployment": str(deployment.id),
-            "deployforge.owner": str(deployment.user_id),
-        },
-    )
-
-    if not result.ok:
-        await _fail(db, deployment, f"Could not start the container: {result.message}")
-        raise RuntimeError_(f"Could not start the container: {result.message}")
-
-    deployment.container_id = result.stdout.strip()[:64] or None
+    if is_compose:
+        container = await _start_compose(db, deployment, env, actor=actor)
+    else:
+        container = await _start_container(db, deployment, repository, env, actor=actor)
 
     # A container that exits immediately — a crash on boot, a bad start command
     # — is the most common failure, and "running" would be a lie. Give it a
@@ -288,6 +262,146 @@ async def start(
     return deployment
 
 
+async def _start_container(
+    db: AsyncSession,
+    deployment: Deployment,
+    repository: Repository,
+    env: dict[str, str],
+    *,
+    actor: str,
+) -> str:
+    """Start a single-image deployment. Returns the container name."""
+    container = deployment.container_name or naming.container_name_for(deployment.id)
+    deployment.container_name = container
+
+    exposed = await docker.image_exposed_ports(deployment.image_ref)
+    port = ports.choose_port(
+        exposed_ports=exposed,
+        env=env,
+        framework=repository.detected_framework,
+        build_method=deployment.build_method.value if deployment.build_method else None,
+    )
+    deployment.app_port = port
+    await db.commit()
+
+    await record(
+        db, deployment.id, "start",
+        f"Starting {deployment.image_ref} on port {port}.", actor=actor,
+    )
+
+    # A container from a previous run would take the name; replace it.
+    await docker.remove_container(container)
+
+    # Buildpack launchers and most frameworks read PORT. Setting it makes the
+    # app listen where the router expects, instead of hoping the two agree.
+    result = await docker.run_container(
+        name=container,
+        image_ref=deployment.image_ref,
+        port=port,
+        env={"PORT": str(port), **env},
+        labels={
+            "deployforge.deployment": str(deployment.id),
+            "deployforge.owner": str(deployment.user_id),
+        },
+    )
+    if not result.ok:
+        await _fail(db, deployment, f"Could not start the container: {result.message}")
+        raise RuntimeError_(f"Could not start the container: {result.message}")
+
+    deployment.container_id = result.stdout.strip()[:64] or None
+    return container
+
+
+async def _start_compose(
+    db: AsyncSession,
+    deployment: Deployment,
+    env: dict[str, str],
+    *,
+    actor: str,
+) -> str:
+    """
+    Bring a whole compose stack up. Returns the routed container's name.
+
+    The stack runs on its own private network, which is what keeps one
+    student's database unreachable from another's app. Only the web service is
+    additionally attached to the shared edge network, so the router can reach
+    it and nothing else in the stack is exposed.
+    """
+    project = deployment.compose_project
+    stack_dir = compose.stack_dir_for(deployment.id)
+    compose_file = compose.find_compose_file(stack_dir)
+
+    if compose_file is None:
+        await _fail(
+            db, deployment,
+            "The stack's working copy is missing. Rebuild this deployment.",
+        )
+        raise RuntimeError_(
+            "The stack's working copy is missing. Rebuild this deployment."
+        )
+
+    await record(
+        db, deployment.id, "start",
+        f"Starting {len(deployment.compose_services or [])} service(s): "
+        f"{', '.join(deployment.compose_services or [])}.",
+        actor=actor,
+    )
+
+    # Environment variables reach compose through a .env file beside the
+    # compose file, which is where Compose itself looks for them.
+    _write_compose_env(stack_dir, env)
+
+    log_file = _build_log_path(deployment)
+    result = await compose.up(
+        compose_file=compose_file, project=project, log_path=log_file
+    )
+    if not result.ok:
+        await _fail(
+            db, deployment,
+            f"The stack failed to start: {result.message}. See the build log.",
+        )
+        raise RuntimeError_(
+            f"The stack failed to start: {result.message}. See the build log."
+        )
+
+    container = deployment.container_name
+    # Idempotent: already being on the network is not an error.
+    await compose.attach_to_edge(container)
+    return container
+
+
+def _write_compose_env(stack_dir, env: dict[str, str]) -> None:
+    """
+    Write the stack's `.env` file. Never raises.
+
+    Compose reads `.env` from the project directory for variable substitution
+    *and* passes matching values through to services, which is the behaviour a
+    student writing a compose file already expects.
+    """
+    if not env:
+        return
+    try:
+        lines = [
+            f"{key}={value}"
+            for key, value in sorted(env.items())
+            if "\n" not in value and "\r" not in value
+        ]
+        (stack_dir / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        logger.warning("Could not write compose .env for %s", stack_dir)
+
+
+def _build_log_path(deployment: Deployment):
+    """The deployment's log file, so `compose up` output lands with the build."""
+    from pathlib import Path
+
+    if deployment.logs_ref:
+        return Path(deployment.logs_ref)
+    from app.builder.service import log_path_for
+
+    return log_path_for(deployment.id)
+
+
 async def _fail(db: AsyncSession, deployment: Deployment, message: str) -> None:
     deployment.status = DeploymentStatus.FAILED
     deployment.error_message = message
@@ -305,6 +419,7 @@ async def stop(
     *,
     actor: str = "owner",
     suspend: bool = False,
+    reason: str | None = None,
 ) -> Deployment:
     """
     Stop the app and take it off the router.
@@ -312,27 +427,42 @@ async def stop(
     A container that is already gone is success — the caller asked for it to
     not be running, and it is not running.
     """
-    container = deployment.container_name
-    if container:
-        await docker.stop_container(container)
-        await docker.remove_container(container)
+    await _tear_down(deployment)
 
     deployment.status = DeploymentStatus.STOPPED
     deployment.container_id = None
     deployment.runtime_stopped_at = datetime.now(timezone.utc)
     if suspend:
         deployment.suspended_by_admin = True
+        if reason:
+            deployment.suspension_reason = reason
     await db.commit()
 
     await record(
         db,
         deployment.id,
         "stop",
-        "Suspended by an administrator." if suspend else "Stopped.",
+        (reason or "Suspended by an administrator.") if suspend else "Stopped.",
         level=EventLevel.WARNING if suspend else EventLevel.INFO,
         actor=actor,
     )
     return deployment
+
+
+async def _tear_down(deployment: Deployment) -> None:
+    """
+    Stop whatever this deployment is running — one container, or a whole stack.
+
+    Absence is success in both cases: the caller asked for it not to be
+    running, and it is not running.
+    """
+    if deployment.build_method is BuildMethod.COMPOSE and deployment.compose_project:
+        await compose.down(deployment.compose_project)
+        return
+
+    if deployment.container_name:
+        await docker.stop_container(deployment.container_name)
+        await docker.remove_container(deployment.container_name)
 
 
 async def restart(
@@ -344,9 +474,7 @@ async def restart(
     actor: str = "owner",
 ) -> Deployment:
     """Stop and start again, on the same image and the same URL."""
-    if deployment.container_name:
-        await docker.stop_container(deployment.container_name)
-        await docker.remove_container(deployment.container_name)
+    await _tear_down(deployment)
     return await start(db, deployment, repository, user, actor=actor)
 
 
@@ -359,8 +487,14 @@ async def destroy(
     The image is left in the registry on purpose: it is the artifact of a
     build, other deployments may reference the same tag, and deleting it would
     make a redeploy re-run the whole build for no gain.
+
+    A compose stack additionally has its volumes and working copy removed —
+    those belong to this deployment alone and nothing else can reference them.
     """
-    if deployment.container_name:
+    if deployment.build_method is BuildMethod.COMPOSE and deployment.compose_project:
+        await compose.down(deployment.compose_project, remove_volumes=True)
+        compose.remove_stack_dir(deployment.id)
+    elif deployment.container_name:
         await docker.stop_container(deployment.container_name)
         await docker.remove_container(deployment.container_name)
 

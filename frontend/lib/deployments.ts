@@ -22,7 +22,7 @@ export type DeploymentStatus =
   | "stopped"
   | "failed";
 
-export type BuildMethod = "docker" | "buildpack";
+export type BuildMethod = "docker" | "buildpack" | "compose";
 export type DetectedType = "docker" | "framework" | "unknown";
 
 export type Deployment = {
@@ -46,6 +46,9 @@ export type Deployment = {
   runtime_started_at: string | null;
   runtime_stopped_at: string | null;
   suspended_by_admin: boolean;
+  suspension_reason: string | null;
+  compose_project: string | null;
+  compose_services: string[] | null;
 
   repository_id: string;
   full_name: string;
@@ -103,11 +106,10 @@ export function isRunning(status: DeploymentStatus): boolean {
 
 /** Whether a "Start" action makes sense right now. */
 export function canStart(d: Deployment): boolean {
+  // A compose stack never has a single image; being prepared is what counts.
+  const buildable = d.build_method === "compose" ? !!d.compose_project : !!d.image_ref;
   return (
-    !!d.image_ref &&
-    !isBusy(d.status) &&
-    !isRunning(d.status) &&
-    !d.suspended_by_admin
+    buildable && !isBusy(d.status) && !isRunning(d.status) && !d.suspended_by_admin
   );
 }
 
@@ -141,6 +143,31 @@ export function statusMeta(status: DeploymentStatus): {
       return { label: "Failed", tone: "danger", moving: false };
     default:
       return { label: status, tone: "neutral", moving: false };
+  }
+}
+
+/** How a build method reads in the UI, and what it implies. */
+export function methodMeta(d: Deployment): { label: string; detail: string } {
+  switch (d.build_method) {
+    case "compose":
+      return {
+        label: "Docker Compose",
+        detail:
+          d.compose_services && d.compose_services.length > 0
+            ? `${d.compose_services.length} services: ${d.compose_services.join(", ")}`
+            : "multi-service stack",
+      };
+    case "docker":
+      return { label: "Dockerfile", detail: "built from your Dockerfile" };
+    case "buildpack":
+      return {
+        label: "Buildpack",
+        detail: d.detected_framework
+          ? `detected as ${d.detected_framework}`
+          : "framework detected automatically",
+      };
+    default:
+      return { label: "Not built", detail: "no build has run yet" };
   }
 }
 

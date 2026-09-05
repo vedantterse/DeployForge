@@ -55,6 +55,21 @@ class Settings(BaseSettings):
     # The pack CLI (Cloud Native Buildpacks). Needs Docker on the same host.
     pack_binary: str = "pack"
     pack_builder: str = "paketobuildpacks/builder-jammy-base"
+    # The run image the built app actually runs on. The base run image omits
+    # system libraries that recent Node builds link against (libatomic), so an
+    # app builds cleanly and then dies on boot with a missing .so. The full run
+    # image carries them, and pairing it with the base builder keeps the 5 GB
+    # builder download rather than doubling it.
+    pack_run_image: str = ""
+    # Node version used when a repository does not pin one itself.
+    #
+    # Left to its own devices the Node buildpack installs the newest release,
+    # and Node 24 links against libatomic, which no Paketo run image ships — so
+    # the image builds cleanly and then dies on boot with a missing shared
+    # library. Defaulting to the current LTS is the difference between a
+    # student's first deploy working and it failing for a reason they have no
+    # way to diagnose. A repository that pins its own version still wins.
+    default_node_version: str = "22.*"
     # Prefix for image tags, e.g. deployforge/<user>-<repo>:<sha>.
     image_namespace: str = "deployforge"
     # A build that has not finished by now is killed.
@@ -93,6 +108,12 @@ class Settings(BaseSettings):
 
     # --- Quotas ---
     default_max_deployments: int = 3
+
+    # Where compose stacks keep their working copy of the repository. Unlike a
+    # single image, a compose stack needs its files at *run* time — the compose
+    # file and every build context — so they cannot live in a temp directory
+    # that is deleted when the build finishes. Empty = beside the build logs.
+    stacks_dir: str = ""
 
     # --- Misc ---
     # Parent dir for temporary repo downloads. Empty = system temp.

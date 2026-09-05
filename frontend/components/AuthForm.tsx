@@ -42,7 +42,10 @@ export default function AuthForm({ mode }: { mode: "login" | "signup" }) {
         ? await signup(email, password)
         : await login(email, password);
       setToken(result.access_token);
-      router.push("/dashboard");
+      // Each role has its own home. An administrator runs the platform and has
+      // no apps of their own, so the student dashboard is not their landing
+      // page — it is a screen they never see.
+      router.push(result.user.role === "admin" ? "/admin" : "/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
       setBusy(false);

@@ -22,6 +22,10 @@ export type User = {
   role: UserRole;
   is_active: boolean;
   created_at: string;
+  max_deployments?: number;
+  /** False when an admin has revoked this account's permission to deploy. */
+  can_deploy?: boolean;
+  deploy_block_reason?: string | null;
 };
 
 export type TokenResponse = {

@@ -18,6 +18,7 @@ import {
   DockerIcon,
   BoxIcon,
   ExternalIcon,
+  LayersIcon,
   PlayIcon,
   RestartIcon,
   StopIcon,
@@ -27,6 +28,7 @@ import {
   canStart,
   isBusy,
   isRunning,
+  methodMeta,
   restartDeployment,
   startDeployment,
   stopDeployment,
@@ -66,6 +68,8 @@ export default function DeploymentCard({
   const running = isRunning(deployment.status);
   const busy = isBusy(deployment.status) || pending !== null;
   const isDocker = deployment.build_method === "docker";
+  const isCompose = deployment.build_method === "compose";
+  const method = methodMeta(deployment);
 
   return (
     <Card
@@ -79,7 +83,8 @@ export default function DeploymentCard({
           <div className="flex flex-wrap items-center gap-2.5">
             <Link
               href={`/deployments/${deployment.id}`}
-              className="truncate font-semibold tracking-tight hover:text-[var(--accent)]"
+              className="truncate font-semibold tracking-tight underline-offset-4 hover:text-[var(--accent)] hover:underline"
+              title="Open this deployment"
             >
               {deployment.target_label}
             </Link>
@@ -96,14 +101,19 @@ export default function DeploymentCard({
               <span className="text-[var(--text-muted)]">{deployment.user_email}</span>
             )}
             <span className="inline-flex items-center gap-1.5">
-              {isDocker ? (
+              {isCompose ? (
+                <LayersIcon className="h-3.5 w-3.5" />
+              ) : isDocker ? (
                 <DockerIcon className="h-3.5 w-3.5" />
               ) : (
                 <BoxIcon className="h-3.5 w-3.5" />
               )}
-              {isDocker ? "Dockerfile" : "Buildpack"}
+              {method.label}
             </span>
-            {deployment.detected_framework && (
+            {isCompose && deployment.compose_services && (
+              <span>{deployment.compose_services.length} services</span>
+            )}
+            {!isCompose && deployment.detected_framework && (
               <span className="capitalize">{deployment.detected_framework}</span>
             )}
             {deployment.commit_sha && (

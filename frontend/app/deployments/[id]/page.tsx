@@ -34,6 +34,7 @@ import {
   BoxIcon,
   DockerIcon,
   ExternalIcon,
+  LayersIcon,
   PlayIcon,
   RestartIcon,
   RocketIcon,
@@ -44,6 +45,7 @@ import {
 import {
   buildRepository,
   canStart,
+  methodMeta,
   deleteDeployment,
   getBuildLogs,
   getDeployment,
@@ -61,7 +63,7 @@ import {
 const POLL_MS = 3000;
 
 export default function DeploymentDetailPage() {
-  return <RequireAuth>{() => <Detail />}</RequireAuth>;
+  return <RequireAuth studentOnly>{() => <Detail />}</RequireAuth>;
 }
 
 type Tab = "build" | "runtime";
@@ -177,6 +179,8 @@ function Detail() {
   const running = isRunning(deployment.status);
   const busy = isBusy(deployment.status) || pending !== null;
   const isDocker = deployment.build_method === "docker";
+  const isCompose = deployment.build_method === "compose";
+  const method = methodMeta(deployment);
 
   return (
     <div className="space-y-8">
@@ -198,8 +202,7 @@ function Detail() {
             <StatusBadge status={deployment.status} />
           </div>
           <p className="mt-1.5 text-sm text-[var(--text-muted)]">
-            {isDocker ? "Built from your Dockerfile" : "Built with buildpacks"}
-            {deployment.detected_framework && ` · ${deployment.detected_framework}`}
+            {method.detail}
             {" · updated "}
             {relativeTime(deployment.updated_at)}
           </p>
@@ -258,8 +261,8 @@ function Detail() {
 
       {deployment.suspended_by_admin && (
         <Alert tone="warn" title="Suspended by an administrator">
-          This app has been stopped by an administrator and cannot be started
-          again until they lift the suspension.
+          {deployment.suspension_reason ??
+            "This app has been stopped by an administrator and cannot be started again until they lift the suspension."}
         </Alert>
       )}
 
@@ -315,9 +318,11 @@ function Detail() {
         />
         <Fact
           label="Method"
-          value={isDocker ? "Dockerfile" : "Buildpack"}
+          value={method.label}
           icon={
-            isDocker ? (
+            isCompose ? (
+              <LayersIcon className="h-3.5 w-3.5" />
+            ) : isDocker ? (
               <DockerIcon className="h-3.5 w-3.5" />
             ) : (
               <BoxIcon className="h-3.5 w-3.5" />
@@ -334,6 +339,34 @@ function Detail() {
           <Mono className="mt-1 block break-all text-[var(--text)]">
             {deployment.image_ref}
           </Mono>
+        </Card>
+      )}
+
+      {isCompose && deployment.compose_services && (
+        <Card className="px-4 py-3">
+          <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-dim)]">
+            Services in this stack
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {deployment.compose_services.map((service) => (
+              <span
+                key={service}
+                className={cx(
+                  "rounded-full border px-2.5 py-0.5 text-xs font-medium",
+                  deployment.container_name?.includes(`-${service}-`)
+                    ? "border-[var(--ok)]/30 bg-[var(--ok-soft)] text-[var(--ok)]"
+                    : "border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-muted)]",
+                )}
+              >
+                {service}
+                {deployment.container_name?.includes(`-${service}-`) && " · routed"}
+              </span>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-[var(--text-dim)]">
+            All services run together on a private network. Only the routed one
+            is reachable from outside.
+          </p>
         </Card>
       )}
 

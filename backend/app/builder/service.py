@@ -23,6 +23,7 @@ the deployment marked `failed` with a reason, not stuck in `building` forever.
 
 from __future__ import annotations
 
+import json
 import logging
 import tempfile
 import uuid
@@ -37,7 +38,7 @@ from app.config import settings
 from app.core.crypto import decrypt_value
 from app.db import AsyncSessionLocal
 from app.detection.candidates import ROOT_PATH, resolve_path
-from app.detection.detector import _COMPOSE_NAMES, _DOCKERFILE_NAMES
+from app.detection.detector import _DOCKERFILE_NAMES
 from app.github import client as github_client
 from app.github.download import downloaded_repository
 from app.github.token import get_access_token
@@ -45,7 +46,7 @@ from app.models.deployment import BuildMethod, Deployment, DeploymentStatus
 from app.models.environment import EnvironmentVariable
 from app.models.event import EventLevel
 from app.models.repository import Repository
-from app.runtime import docker
+from app.runtime import compose, docker
 from app.runtime.service import record
 
 logger = logging.getLogger(__name__)
@@ -73,11 +74,6 @@ def find_dockerfile(source: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
-
-
-def has_compose(source: Path) -> bool:
-    """Whether this directory defines a multi-service compose stack."""
-    return any((source / name).is_file() for name in _COMPOSE_NAMES)
 
 
 def registry_ref(local_ref: str) -> str:
@@ -237,9 +233,21 @@ async def _build(
             return
 
         # The directory being built is the authority on how to build it — not
-        # the detection row, which may predate a commit that added a Dockerfile.
+        # the detection row, which may predate a commit that added a compose
+        # file or a Dockerfile.
+        #
+        # Compose is checked first and wins over a Dockerfile beside it: when a
+        # repository has both, the compose file is the author saying "this app
+        # is these services together", and the Dockerfile is usually just one
+        # of them.
+        compose_file = compose.find_compose_file(source)
         dockerfile = find_dockerfile(source)
-        method = BuildMethod.DOCKER if dockerfile else BuildMethod.BUILDPACK
+        if compose_file is not None:
+            method = BuildMethod.COMPOSE
+        elif dockerfile is not None:
+            method = BuildMethod.DOCKER
+        else:
+            method = BuildMethod.BUILDPACK
         deployment.build_method = method
         await db.commit()
 
@@ -248,28 +256,43 @@ async def _build(
             f"Building {repository.target_label}\n"
             f"  branch     {repository.default_branch}\n"
             f"  commit     {commit_sha or 'unknown'}\n"
-            f"  image      {image_ref}\n"
+            f"  image      {image_ref if method is not BuildMethod.COMPOSE else '(compose stack)'}\n"
             f"  method     {method.value}\n"
             f"  env vars   {len(env)}\n\n",
         )
         await record(
             db, deployment.id, "build",
-            f"Building with {'the repository Dockerfile' if dockerfile else 'Cloud Native Buildpacks'}.",
+            {
+                BuildMethod.COMPOSE: "Preparing the Docker Compose stack.",
+                BuildMethod.DOCKER: "Building with the repository Dockerfile.",
+                BuildMethod.BUILDPACK: "Building with Cloud Native Buildpacks.",
+            }[method],
         )
 
-        if has_compose(source) and dockerfile is None:
-            # Compose describes several services and their wiring; there is no
-            # single image to produce, so say that plainly instead of building
-            # something that is not what the file describes.
-            await _finish(
-                db, deployment, status=DeploymentStatus.FAILED,
-                error=(
-                    "This target uses Docker Compose, which describes multiple "
-                    "services. DeployForge runs one image per deployment — add a "
-                    "Dockerfile for the service you want to deploy, or pick a "
-                    "subdirectory that has one."
-                ),
+        if method is BuildMethod.COMPOSE:
+            succeeded, error = await _prepare_compose(
+                db, deployment, compose_file=compose_file,
+                source=source, log_file=log_file,
             )
+            if succeeded:
+                # A stack has no single image to store; the services carry
+                # their own, built by compose from the working copy.
+                await _finish(db, deployment, status=DeploymentStatus.BUILT)
+                await record(
+                    db, deployment.id, "build",
+                    f"Stack ready: {', '.join(deployment.compose_services or [])}.",
+                    level=EventLevel.SUCCESS,
+                )
+            else:
+                await _finish(
+                    db, deployment, status=DeploymentStatus.FAILED,
+                    error=error or "The compose stack could not be prepared.",
+                )
+                await record(
+                    db, deployment.id, "build",
+                    error or "The compose stack could not be prepared.",
+                    level=EventLevel.ERROR,
+                )
             return
 
         if dockerfile is not None:
@@ -302,6 +325,64 @@ async def _build(
     await _finish(db, deployment, status=DeploymentStatus.BUILT, image_ref=image_ref)
 
 
+async def _prepare_compose(
+    db: AsyncSession,
+    deployment: Deployment,
+    *,
+    compose_file: Path,
+    source: Path,
+    log_file: Path,
+) -> tuple[bool, str | None]:
+    """
+    Validate the stack, decide what to route to, and keep a copy of the source.
+
+    No images are built here — `docker compose up --build` does that at start,
+    from the working copy — but the file is parsed now so a broken compose file
+    is a failed *build* with a clear message, rather than a mysterious failure
+    to start a minute later.
+    """
+    project = compose.project_name(deployment.id)
+
+    config = await compose.resolve_config(compose_file, project)
+    if config is None:
+        return False, (
+            f"{compose_file.name} could not be parsed by Docker Compose. Check "
+            "it with `docker compose config` locally and fix the errors it "
+            "reports."
+        )
+
+    services = compose.service_names(config)
+    if not services:
+        return False, f"{compose_file.name} defines no services."
+
+    web_service, port = compose.choose_web_service(config)
+    if web_service is None:
+        return False, (
+            "No service in this stack looks like a web service. Publish a port "
+            "on the one that serves HTTP, or name it `web`, so DeployForge "
+            "knows where to send traffic."
+        )
+
+    # The stack is started from its own copy, which outlives this build.
+    stack_dir = compose.replace_stack_dir(deployment.id, source)
+
+    deployment.compose_project = project
+    deployment.compose_services = services
+    deployment.container_name = compose.container_name_for(project, web_service)
+    deployment.app_port = port or 80
+    await db.commit()
+
+    _append(
+        log_file,
+        f"\nCompose stack prepared\n"
+        f"  project    {project}\n"
+        f"  services   {', '.join(services)}\n"
+        f"  routed to  {web_service}:{deployment.app_port}\n"
+        f"  workdir    {stack_dir}\n",
+    )
+    return True, None
+
+
 async def _build_with_docker(
     *, image_ref: str, source: Path, dockerfile: Path, log_file: Path
 ) -> tuple[bool, str | None]:
@@ -318,6 +399,40 @@ async def _build_with_docker(
     return False, f"docker build failed: {result.message}"
 
 
+def node_version_default(source: Path, env: dict[str, str]) -> dict[str, str]:
+    """
+    Pin a working Node version when the repository has not chosen one.
+
+    The Node buildpack otherwise installs the newest release, and Node 24 links
+    against libatomic, which no Paketo run image ships: the build succeeds and
+    the container then dies on boot with a missing shared library. That is an
+    error a student cannot act on, so an unpinned project gets the current LTS.
+
+    A repository that states its own version in `engines.node`, or a student who
+    sets `BP_NODE_VERSION` themselves, is left alone — this fills a gap, it does
+    not overrule anyone.
+    """
+    if not settings.default_node_version.strip():
+        return {}
+    if "BP_NODE_VERSION" in env:
+        return {}
+
+    package_json = source / "package.json"
+    if not package_json.is_file():
+        return {}
+
+    try:
+        manifest = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # An unreadable package.json is the buildpack's problem to report.
+        return {}
+
+    if (manifest.get("engines") or {}).get("node"):
+        return {}
+
+    return {"BP_NODE_VERSION": settings.default_node_version.strip()}
+
+
 async def _build_with_buildpacks(
     *, image_ref: str, source: Path, workdir: Path,
     env: dict[str, str], log_file: Path,
@@ -325,8 +440,12 @@ async def _build_with_buildpacks(
     """Build with Cloud Native Buildpacks, which infer the whole recipe."""
     await pack.check_toolchain()
 
+    build_env = {**env, **node_version_default(source, env)}
+
     # The env file lives inside the temp workdir, which is deleted with it.
-    env_file = pack.write_env_file(env, workdir / "build.env") if env else None
+    env_file = (
+        pack.write_env_file(build_env, workdir / "build.env") if build_env else None
+    )
 
     outcome = await pack.run_pack_build(
         image_ref=image_ref,

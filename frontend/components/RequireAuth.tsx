@@ -16,9 +16,16 @@ import { getCurrentUser, type User } from "@/lib/auth";
  */
 export default function RequireAuth({
   adminOnly = false,
+  studentOnly = false,
   children,
 }: {
   adminOnly?: boolean;
+  /**
+   * Send administrators away. The student area is not a lesser version of the
+   * admin console — deploying is not something an administrator does here, so
+   * these pages are not theirs to land on, even by typing the URL.
+   */
+  studentOnly?: boolean;
   children: (user: User) => React.ReactNode;
 }) {
   const router = useRouter();
@@ -37,13 +44,17 @@ export default function RequireAuth({
         router.replace("/dashboard");
         return;
       }
+      if (studentOnly && u.role === "admin") {
+        router.replace("/admin");
+        return;
+      }
       setUser(u);
       setChecked(true);
     });
     return () => {
       active = false;
     };
-  }, [router, adminOnly]);
+  }, [router, adminOnly, studentOnly]);
 
   if (!checked || !user) {
     // A skeleton in the final layout, so the page does not jump when it loads.

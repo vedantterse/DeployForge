@@ -34,6 +34,9 @@ class UserOut(BaseModel):
     email: EmailStr
     role: UserRole
     is_active: bool
+    max_deployments: int = 3
+    can_deploy: bool = True
+    deploy_block_reason: str | None = None
     created_at: datetime
 
 

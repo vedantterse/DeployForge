@@ -13,7 +13,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy import func, select
+from sqlalchemy import Date, cast, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deployment_routes import _deployment_out
@@ -32,7 +32,9 @@ from app.schemas.auth import UserOut
 from app.schemas.deployment import (
     AdminUserUpdate,
     DeploymentOut,
+    PlatformAnalyticsOut,
     PlatformStatusOut,
+    SuspendRequest,
     UserDeploymentsOut,
 )
 
@@ -123,6 +125,8 @@ async def platform_overview(_admin: AdminUser, db: DbSession) -> list[UserDeploy
             repository_count=repo_counts.get(user.id, 0),
             running_count=running_by_user.get(user.id, 0),
             max_deployments=user.max_deployments,
+            can_deploy=user.can_deploy,
+            deploy_block_reason=user.deploy_block_reason,
             github_username=connections.get(user.id),
             deployments=by_user.get(user.id, []),
         )
@@ -181,7 +185,10 @@ async def _deployment_with_context(
 
 @router.post("/deployments/{deployment_id}/suspend", response_model=DeploymentOut)
 async def suspend_deployment(
-    deployment_id: uuid.UUID, _admin: AdminUser, db: DbSession
+    deployment_id: uuid.UUID,
+    _admin: AdminUser,
+    db: DbSession,
+    payload: SuspendRequest | None = None,
 ) -> DeploymentOut:
     """
     Stop an app and prevent its owner from starting it again.
@@ -192,7 +199,10 @@ async def suspend_deployment(
     student a second later.
     """
     deployment, repository, owner = await _deployment_with_context(db, deployment_id)
-    await runtime_service.stop(db, deployment, actor="admin", suspend=True)
+    await runtime_service.stop(
+        db, deployment, actor="admin", suspend=True,
+        reason=payload.reason if payload else None,
+    )
     return _deployment_out(deployment, repository, user_email=owner.email)
 
 
@@ -203,6 +213,7 @@ async def resume_deployment(
     """Lift a suspension, and start the app again if it has an image."""
     deployment, repository, owner = await _deployment_with_context(db, deployment_id)
     deployment.suspended_by_admin = False
+    deployment.suspension_reason = None
     await db.commit()
     await runtime_service.record(
         db, deployment.id, "resume",
@@ -246,16 +257,177 @@ async def update_user(
             "administrator to do it."
         )
 
+    if user.id == admin.id and payload.can_deploy is False:
+        raise ConflictError("You cannot revoke your own deploy permission.")
+
     if payload.is_active is not None:
         user.is_active = payload.is_active
     if payload.max_deployments is not None:
         user.max_deployments = payload.max_deployments
     if payload.role is not None:
         user.role = payload.role
+    if payload.can_deploy is not None:
+        user.can_deploy = payload.can_deploy
+        # Clear a stale reason when rights are restored, so the next block does
+        # not inherit the previous explanation.
+        user.deploy_block_reason = (
+            None if payload.can_deploy else payload.deploy_block_reason
+        )
+    elif payload.deploy_block_reason is not None:
+        user.deploy_block_reason = payload.deploy_block_reason
 
     await db.commit()
     await db.refresh(user)
     return UserOut.model_validate(user)
+
+
+@router.get("/analytics", response_model=PlatformAnalyticsOut)
+async def platform_analytics(_admin: AdminUser, db: DbSession) -> PlatformAnalyticsOut:
+    """
+    Everything the admin overview needs, in one request.
+
+    Aggregated in SQL rather than by loading every row and counting in Python:
+    the page is the first thing an admin opens, and it should not get slower as
+    the class fills up.
+    """
+
+    async def scalar(stmt) -> int:
+        return (await db.execute(stmt)).scalar_one() or 0
+
+    def count_of(model, *where):
+        stmt = select(func.count()).select_from(model)
+        return stmt.where(*where) if where else stmt
+
+    users = await scalar(count_of(User))
+    admins = await scalar(count_of(User, User.role == UserRole.ADMIN))
+    active_users = await scalar(count_of(User, User.is_active.is_(True)))
+    blocked_users = await scalar(count_of(User, User.can_deploy.is_(False)))
+
+    by_status = {
+        status_value.value if hasattr(status_value, "value") else str(status_value): n
+        for status_value, n in (
+            await db.execute(
+                select(Deployment.status, func.count()).group_by(Deployment.status)
+            )
+        ).all()
+    }
+    by_method = {
+        (method.value if hasattr(method, "value") else str(method)): n
+        for method, n in (
+            await db.execute(
+                select(Deployment.build_method, func.count())
+                .where(Deployment.build_method.is_not(None))
+                .group_by(Deployment.build_method)
+            )
+        ).all()
+    }
+    by_framework = {
+        framework: n
+        for framework, n in (
+            await db.execute(
+                select(Repository.detected_framework, func.count())
+                .where(Repository.detected_framework.is_not(None))
+                .group_by(Repository.detected_framework)
+                .order_by(func.count().desc())
+            )
+        ).all()
+    }
+
+    # Deployments created per day over the last fortnight — enough to show a
+    # trend across a project week without becoming a wall of bars.
+    #
+    # A plain cast to DATE rather than `date_trunc('day', ...)`: SQLAlchemy
+    # renders the unit as a bind parameter, and PostgreSQL then refuses to
+    # match the SELECT expression against the GROUP BY one.
+    day = cast(Deployment.created_at, Date).label("day")
+    daily = [
+        {"date": value.isoformat(), "count": n}
+        for value, n in (
+            await db.execute(
+                select(day, func.count())
+                .where(
+                    Deployment.created_at >= func.now() - text("interval '14 days'")
+                )
+                .group_by(day)
+                .order_by(day)
+            )
+        ).all()
+    ]
+
+    top_users = [
+        {"email": email, "deployments": n, "running": running or 0}
+        for email, n, running in (
+            await db.execute(
+                select(
+                    User.email,
+                    func.count(Deployment.id),
+                    func.count(Deployment.id).filter(
+                        Deployment.status.in_(
+                            [DeploymentStatus.RUNNING, DeploymentStatus.LIVE]
+                        )
+                    ),
+                )
+                .join(Deployment, Deployment.user_id == User.id)
+                .group_by(User.email)
+                .order_by(func.count(Deployment.id).desc())
+                .limit(5)
+            )
+        ).all()
+    ]
+
+    # Build durations, from the rows that actually finished a build.
+    finished = (
+        select(
+            func.extract(
+                "epoch",
+                Deployment.build_finished_at - Deployment.build_started_at,
+            ).label("seconds")
+        )
+        .where(
+            Deployment.build_started_at.is_not(None),
+            Deployment.build_finished_at.is_not(None),
+        )
+        .subquery()
+    )
+    median = (
+        await db.execute(
+            select(
+                func.percentile_cont(0.5).within_group(finished.c.seconds.asc())
+            )
+        )
+    ).scalar()
+    longest = (await db.execute(select(func.max(finished.c.seconds)))).scalar()
+
+    built = sum(
+        by_status.get(s, 0)
+        for s in ("built", "running", "live", "stopped", "pushing")
+    )
+    failed = by_status.get("failed", 0)
+    attempted = built + failed
+
+    return PlatformAnalyticsOut(
+        users=users,
+        admins=admins,
+        active_users=active_users,
+        blocked_users=blocked_users,
+        github_connections=await scalar(count_of(GitHubConnection)),
+        repositories=await scalar(count_of(Repository)),
+        deployments=await scalar(count_of(Deployment)),
+        running=by_status.get("running", 0) + by_status.get("live", 0),
+        stopped=by_status.get("stopped", 0),
+        failed=failed,
+        suspended=await scalar(
+            count_of(Deployment, Deployment.suspended_by_admin.is_(True))
+        ),
+        by_method=by_method,
+        by_framework=by_framework,
+        by_status=by_status,
+        daily=daily,
+        top_users=top_users,
+        build_seconds_median=round(float(median), 1) if median is not None else None,
+        build_seconds_max=round(float(longest), 1) if longest is not None else None,
+        success_rate=round(built / attempted, 3) if attempted else None,
+    )
 
 
 @router.get("/platform/status", response_model=PlatformStatusOut)

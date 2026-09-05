@@ -67,6 +67,18 @@ function AllDeployments() {
     load();
   }, [load]);
 
+  async function suspend(d: Deployment) {
+    const reason = window.prompt(
+      `Suspend ${d.target_label}?
+
+It is stopped, its owner cannot start it again, and they cannot delete it to get a clean one. Give a reason they will see:`,
+      "",
+    );
+    // `null` means the admin cancelled; an empty string is a deliberate blank.
+    if (reason === null) return;
+    await act(d.id, "suspend", (id) => suspendDeployment(id, reason.trim() || undefined));
+  }
+
   async function act(id: string, name: string, fn: (id: string) => Promise<unknown>) {
     setPending(`${id}:${name}`);
     setError("");
@@ -120,9 +132,10 @@ function AllDeployments() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">All apps</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Every deployment on the platform, whoever owns it.
+          Every deployment on the platform, whoever owns it. Suspending stops a
+          project and prevents its owner restarting or re-adding it.
         </p>
       </div>
 
@@ -223,6 +236,12 @@ function AllDeployments() {
                           <ExternalIcon className="h-3 w-3" />
                         </a>
                       )}
+                      {d.suspended_by_admin && d.suspension_reason && (
+                        <p className="mt-2 rounded-[var(--radius-sm)] bg-[var(--danger-soft)] px-3 py-2 text-xs text-[var(--danger)]">
+                          <span className="font-semibold">Suspended:</span>{" "}
+                          {d.suspension_reason}
+                        </p>
+                      )}
                       {d.image_ref && (
                         <Mono className="mt-1 block truncate">{d.image_ref}</Mono>
                       )}
@@ -244,13 +263,9 @@ function AllDeployments() {
                         <Button
                           size="sm"
                           loading={pending === `${d.id}:suspend`}
-                          disabled={busy || !running}
-                          onClick={() => act(d.id, "suspend", suspendDeployment)}
-                          title={
-                            running
-                              ? "Stop this app and prevent the owner restarting it"
-                              : "Only a running app can be suspended"
-                          }
+                          disabled={busy}
+                          onClick={() => suspend(d)}
+                          title="Stop this app and stop the owner restarting, deleting or re-adding it"
                         >
                           <StopIcon className="h-3 w-3" />
                           Suspend

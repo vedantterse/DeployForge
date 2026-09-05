@@ -43,6 +43,9 @@ class DeploymentOut(BaseModel):
     runtime_started_at: datetime | None = None
     runtime_stopped_at: datetime | None = None
     suspended_by_admin: bool = False
+    suspension_reason: str | None = None
+    compose_project: str | None = None
+    compose_services: list[str] | None = None
 
     repository_id: uuid.UUID
     full_name: str
@@ -68,6 +71,8 @@ class UserDeploymentsOut(BaseModel):
     repository_count: int
     running_count: int = 0
     max_deployments: int = 3
+    can_deploy: bool = True
+    deploy_block_reason: str | None = None
     github_username: str | None = None
     deployments: list[DeploymentOut]
 
@@ -115,6 +120,45 @@ class AdminUserUpdate(BaseModel):
     is_active: bool | None = None
     max_deployments: int | None = Field(default=None, ge=0, le=50)
     role: UserRole | None = None
+    # Revoking deploy rights is deliberately separate from disabling the
+    # account: it stops the student adding load to the shared machine while
+    # leaving them able to log in and see their history.
+    can_deploy: bool | None = None
+    deploy_block_reason: str | None = Field(default=None, max_length=500)
+
+
+class SuspendRequest(BaseModel):
+    """Why a deployment is being suspended, shown to its owner."""
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class PlatformAnalyticsOut(BaseModel):
+    """Everything the admin overview charts and counts."""
+
+    users: int
+    admins: int
+    active_users: int
+    blocked_users: int
+    github_connections: int
+    repositories: int
+    deployments: int
+    running: int
+    stopped: int
+    failed: int
+    suspended: int
+    # Build method mix, e.g. {"docker": 4, "buildpack": 2, "compose": 1}.
+    by_method: dict[str, int] = {}
+    by_framework: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    # Deployments created per day, oldest first: [{"date": "2026-09-01", "count": 3}]
+    daily: list[dict] = []
+    # Busiest accounts, most deployments first.
+    top_users: list[dict] = []
+    # Median and worst build durations, in seconds.
+    build_seconds_median: float | None = None
+    build_seconds_max: float | None = None
+    success_rate: float | None = None
 
 
 class PlatformStatusOut(BaseModel):

@@ -27,15 +27,16 @@ import {
   listDeployments,
   type Deployment,
 } from "@/lib/deployments";
+import type { User } from "@/lib/auth";
 
 // Fast enough that a build feels live, slow enough to be unnoticeable.
 const POLL_MS = 4000;
 
 export default function DashboardPage() {
-  return <RequireAuth>{() => <Dashboard />}</RequireAuth>;
+  return <RequireAuth studentOnly>{(user) => <Dashboard user={user} />}</RequireAuth>;
 }
 
-function Dashboard() {
+function Dashboard({ user }: { user: User }) {
   const [deployments, setDeployments] = useState<Deployment[] | null>(null);
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -90,13 +91,23 @@ function Dashboard() {
             Everything you have deployed, and whether it is up.
           </p>
         </div>
-        <Link href="/dashboard/new">
-          <Button variant="primary">
-            <RocketIcon className="h-4 w-4" />
-            Deploy new app
-          </Button>
-        </Link>
+        {user.can_deploy !== false && (
+          <Link href="/dashboard/new">
+            <Button variant="primary">
+              <RocketIcon className="h-4 w-4" />
+              Deploy new app
+            </Button>
+          </Link>
+        )}
       </div>
+
+      {user.can_deploy === false && (
+        <Alert tone="warn" title="Deployments are blocked on your account">
+          {user.deploy_block_reason ??
+            "An administrator has revoked your permission to deploy."}{" "}
+          Your existing apps are unaffected and you can still see them here.
+        </Alert>
+      )}
 
       {error && <Alert>{error}</Alert>}
 

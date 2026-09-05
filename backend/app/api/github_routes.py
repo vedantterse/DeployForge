@@ -28,7 +28,9 @@ from app.github import client as github_client
 from app.github import oauth
 from app.github.crypto import encrypt_token
 from app.github.token import get_access_token
+from app.models.deployment import Deployment
 from app.models.github import GitHubConnection
+from app.models.repository import Repository
 from app.schemas.github import ConnectionStatusOut, ConnectUrlOut, RepoOut
 
 router = APIRouter(prefix="/github", tags=["github"])
@@ -145,7 +147,47 @@ async def list_repos(current_user: CurrentUser, db: DbSession) -> list[RepoOut]:
     """
     access_token = await get_access_token(db, current_user.id)
     repos = await github_client.list_repositories(access_token)
-    return [RepoOut.model_validate(r) for r in repos]
+
+    # Which of them this account has already connected, and where. Marking the
+    # list is the difference between "you cannot deploy this twice" being a
+    # visible fact and being an error the user discovers three clicks later.
+    rows = (
+        await db.execute(
+            select(Repository.github_repo_id, Repository.deploy_path, Repository.id)
+            .where(Repository.user_id == current_user.id)
+        )
+    ).all()
+
+    connected: dict[int, list[str]] = {}
+    for github_repo_id, deploy_path, _repo_id in rows:
+        connected.setdefault(github_repo_id, []).append(deploy_path or "")
+
+    latest_deployment = {
+        repo_id: deployment_id
+        for repo_id, deployment_id in (
+            await db.execute(
+                select(Repository.github_repo_id, Deployment.id)
+                .join(Deployment, Deployment.repository_id == Repository.id)
+                .where(Repository.user_id == current_user.id)
+                .order_by(Deployment.created_at.desc())
+            )
+        ).all()
+    }
+
+    out: list[RepoOut] = []
+    for repo in repos:
+        paths = connected.get(repo["github_repo_id"], [])
+        out.append(
+            RepoOut.model_validate(
+                {
+                    **repo,
+                    "connected": bool(paths),
+                    "connected_paths": sorted(paths),
+                    "deployment_id": latest_deployment.get(repo["github_repo_id"]),
+                }
+            )
+        )
+    return out
 
 
 @router.delete("/disconnect", status_code=status.HTTP_204_NO_CONTENT)

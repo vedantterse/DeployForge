@@ -54,7 +54,7 @@ import { buildRepository } from "@/lib/deployments";
 
 export default function NewDeploymentPage() {
   return (
-    <RequireAuth>
+    <RequireAuth studentOnly>
       {() => (
         <Suspense fallback={<Skeleton className="h-96" />}>
           <Wizard />
@@ -257,40 +257,71 @@ function Wizard() {
               </div>
 
               <div className="max-h-96 space-y-2 overflow-auto pr-1">
-                {filtered?.map((repo) => (
-                  <button
-                    key={repo.github_repo_id}
-                    onClick={() => pickRepo(repo)}
-                    disabled={scanning !== null}
-                    className={cx(
-                      "flex w-full items-center justify-between gap-3 rounded-[var(--radius-sm)] border px-4 py-3 text-left transition-colors",
-                      scan?.full_name === repo.full_name
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                        : "border-[var(--border)] bg-[var(--surface-2)] hover:border-[var(--border-strong)] hover:bg-[var(--surface-3)]",
-                      scanning !== null && "opacity-60",
-                    )}
-                  >
-                    <span className="min-w-0">
-                      <span className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium">
-                          {repo.full_name}
+                {filtered?.map((repo) => {
+                  const deployed = repo.connected;
+                  return (
+                    <div
+                      key={repo.github_repo_id}
+                      className={cx(
+                        "flex w-full items-center justify-between gap-3 rounded-[var(--radius-sm)] border px-4 py-3 transition-colors",
+                        scan?.full_name === repo.full_name
+                          ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                          : deployed
+                            ? "border-[var(--border)] bg-[var(--surface-2)]/50"
+                            : "border-[var(--border)] bg-[var(--surface-2)] hover:border-[var(--border-strong)] hover:bg-[var(--surface-3)]",
+                      )}
+                    >
+                      <button
+                        onClick={() => pickRepo(repo)}
+                        disabled={scanning !== null}
+                        className="min-w-0 flex-1 text-left disabled:cursor-not-allowed"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="truncate text-sm font-medium">
+                            {repo.full_name}
+                          </span>
+                          {repo.private && <Badge>Private</Badge>}
+                          {deployed && (
+                            <Badge tone="ok">
+                              <CheckIcon className="h-3 w-3" />
+                              Deployed
+                            </Badge>
+                          )}
                         </span>
-                        {repo.private && <Badge>Private</Badge>}
+                        <span className="mt-0.5 flex items-center gap-2 text-xs text-[var(--text-dim)]">
+                          {repo.language && <span>{repo.language}</span>}
+                          <span>updated {relativeTime(repo.updated_at)}</span>
+                          {deployed && (
+                            <span>
+                              {repo.connected_paths
+                                .map((path) => path || "whole repository")
+                                .join(", ")}{" "}
+                              connected
+                            </span>
+                          )}
+                        </span>
+                      </button>
+
+                      <span className="flex shrink-0 items-center gap-3">
+                        {deployed && repo.deployment_id && (
+                          <Link
+                            href={`/deployments/${repo.deployment_id}`}
+                            className="text-xs text-[var(--accent)] hover:underline"
+                          >
+                            View
+                          </Link>
+                        )}
+                        {scanning === repo.full_name ? (
+                          <Spinner />
+                        ) : (
+                          <span className="text-xs text-[var(--text-dim)]">
+                            {deployed ? "Scan again" : "Scan"}
+                          </span>
+                        )}
                       </span>
-                      <span className="mt-0.5 flex items-center gap-2 text-xs text-[var(--text-dim)]">
-                        {repo.language && <span>{repo.language}</span>}
-                        <span>updated {relativeTime(repo.updated_at)}</span>
-                      </span>
-                    </span>
-                    {scanning === repo.full_name ? (
-                      <Spinner />
-                    ) : (
-                      <span className="shrink-0 text-xs text-[var(--text-dim)]">
-                        Scan
-                      </span>
-                    )}
-                  </button>
-                ))}
+                    </div>
+                  );
+                })}
                 {filtered?.length === 0 && (
                   <p className="py-6 text-center text-sm text-[var(--text-dim)]">
                     No repository matches “{query}”.
@@ -317,7 +348,8 @@ function Wizard() {
           <div className="space-y-3">
             {scan.candidates.map((candidate) => {
               const active = selected?.deploy_path === (candidate.path || null);
-              const deployable = candidate.type !== "unknown";
+              const taken = candidate.already_connected;
+              const deployable = candidate.type !== "unknown" && !taken;
               return (
                 <button
                   key={candidate.path || "__root__"}
@@ -348,18 +380,26 @@ function Wizard() {
                         {candidate.label}
                       </span>
                       <span className="text-xs text-[var(--text-dim)]">
-                        {describeCandidate(candidate)}
-                        {candidate.evidence.length > 0 &&
+                        {taken
+                          ? "Already deployed — a target can only be connected once"
+                          : describeCandidate(candidate)}
+                        {!taken &&
+                          candidate.evidence.length > 0 &&
                           ` · ${candidate.evidence.slice(0, 3).join(", ")}`}
                       </span>
                     </span>
                   </span>
-                  {active && (
+                  {taken ? (
+                    <Badge tone="ok">
+                      <CheckIcon className="h-3 w-3" />
+                      Deployed
+                    </Badge>
+                  ) : active ? (
                     <Badge tone="accent">
                       <CheckIcon className="h-3 w-3" />
                       Selected
                     </Badge>
-                  )}
+                  ) : null}
                 </button>
               );
             })}
@@ -393,6 +433,14 @@ function Wizard() {
               </p>
             </div>
           )}
+
+          {scan.candidates.length > 0 &&
+            scan.candidates.every((c) => c.already_connected) && (
+              <Alert tone="ok" title="Everything here is already deployed">
+                Every deployable target in this repository is connected to your
+                account. Manage them from My apps.
+              </Alert>
+            )}
 
           {scan.candidates.every((c) => c.type === "unknown") && (
             <Alert tone="warn" title="Nothing deployable was found">

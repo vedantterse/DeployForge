@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import CurrentUser
 from app.builder import pack
 from app.builder.service import run_build
-from app.core.errors import AppError, ConflictError, NotFoundError
+from app.core.errors import PermissionError_, AppError, ConflictError, NotFoundError
 from app.db import get_db
 from app.detection.candidates import (
     ROOT_PATH,
@@ -64,6 +64,22 @@ router = APIRouter(prefix="/repos", tags=["repositories"])
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
+def _require_deploy_permission(user) -> None:
+    """
+    Refuse when an administrator has revoked this account's deploy rights.
+
+    Checked at every point that creates work on the shared machine — selecting
+    a target and starting a build — rather than only in the UI, which is a
+    convenience and not a control.
+    """
+    if not user.can_deploy:
+        raise PermissionError_(
+            user.deploy_block_reason
+            or "An administrator has revoked your permission to deploy. "
+            "Your existing deployments are unaffected."
+        )
+
+
 class UnknownTargetError(AppError):
     code = "unknown_target"
     status_code = 400
@@ -73,7 +89,12 @@ def _label_for(path: str) -> str:
     return "Whole repository" if path == ROOT_PATH else f"{path}/"
 
 
-def _candidate_out(candidate: RepositoryCandidate) -> CandidateOut:
+def _candidate_out(
+    candidate: RepositoryCandidate,
+    *,
+    already_connected: bool = False,
+    deployment_id=None,
+) -> CandidateOut:
     result = candidate.result
     return CandidateOut(
         path=candidate.path,
@@ -84,6 +105,8 @@ def _candidate_out(candidate: RepositoryCandidate) -> CandidateOut:
         build_method=BuildMethod(result.build_method) if result.build_method else None,
         evidence=result.evidence,
         reason=result.reason,
+        already_connected=already_connected,
+        deployment_id=deployment_id,
     )
 
 
@@ -209,6 +232,24 @@ async def scan_repository(
         candidates = deployable_candidates(scan_candidates(download.path))
         file_count, total_bytes = download.file_count, download.total_bytes
 
+    # Targets this account has already connected from this repository. A
+    # monorepo can have `frontend` taken and `backend` still free, so this is
+    # per-target rather than per-repository.
+    taken = {
+        (deploy_path or ""): deployment_id
+        for deploy_path, deployment_id in (
+            await db.execute(
+                select(Repository.deploy_path, Deployment.id)
+                .outerjoin(Deployment, Deployment.repository_id == Repository.id)
+                .where(
+                    Repository.user_id == current_user.id,
+                    Repository.github_repo_id == metadata["github_repo_id"],
+                )
+                .order_by(Deployment.created_at.desc().nullslast())
+            )
+        ).all()
+    }
+
     scan_token = create_scan_token(
         current_user.id,
         {
@@ -226,7 +267,14 @@ async def scan_repository(
         commit_sha=commit_sha,
         file_count=file_count,
         total_bytes=total_bytes,
-        candidates=[_candidate_out(c) for c in candidates],
+        candidates=[
+            _candidate_out(
+                c,
+                already_connected=c.path in taken,
+                deployment_id=taken.get(c.path),
+            )
+            for c in candidates
+        ],
         scan_token=scan_token,
     )
 
@@ -247,6 +295,7 @@ async def select_target(
     or a detection result that never happened. Connecting the same repository
     at a different path creates a separate target.
     """
+    _require_deploy_permission(current_user)
     claims = read_scan_token(payload.scan_token, current_user.id)
     metadata = claims["metadata"]
 
@@ -377,6 +426,7 @@ async def build_repository(
     The `analyzed` row created when the target was selected is reused for its
     first build; later builds append a new row, one per attempt.
     """
+    _require_deploy_permission(current_user)
     repository = await _owned_repository(db, repo_id, current_user.id)
 
     # Only a buildpack build needs `pack`. A repository with its own Dockerfile

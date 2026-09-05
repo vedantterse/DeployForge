@@ -799,3 +799,43 @@ async def test_the_build_endpoint_reports_an_old_toolchain(
             select(Deployment).where(Deployment.repository_id == repository.id)
         )
     ).first() is None
+
+
+# --- Node version defaulting -------------------------------------------------
+# Left alone, the Node buildpack installs the newest release. Node 24 links
+# against libatomic, which no Paketo run image ships, so the image builds and
+# then dies on boot with a missing shared library — an error a student has no
+# way to act on. These pin the rule that fills that gap without overruling
+# anyone who has stated a version themselves.
+
+def test_an_unpinned_node_project_gets_a_working_default(tmp_path):
+    (tmp_path / "package.json").write_text('{"name": "app"}', encoding="utf-8")
+    assert build_service.node_version_default(tmp_path, {}) == {
+        "BP_NODE_VERSION": settings.default_node_version
+    }
+
+
+def test_a_project_that_pins_its_node_version_is_left_alone(tmp_path):
+    (tmp_path / "package.json").write_text(
+        '{"engines": {"node": "18.x"}}', encoding="utf-8"
+    )
+    assert build_service.node_version_default(tmp_path, {}) == {}
+
+
+def test_an_explicit_bp_node_version_wins(tmp_path):
+    """A student who set the variable themselves has already decided."""
+    (tmp_path / "package.json").write_text('{"name": "app"}', encoding="utf-8")
+    assert build_service.node_version_default(
+        tmp_path, {"BP_NODE_VERSION": "21.x"}
+    ) == {}
+
+
+def test_a_non_node_project_is_untouched(tmp_path):
+    (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+    assert build_service.node_version_default(tmp_path, {}) == {}
+
+
+def test_an_unreadable_package_json_is_left_to_the_buildpack(tmp_path):
+    """Reporting malformed JSON is the buildpack's job, not ours."""
+    (tmp_path / "package.json").write_text("{ not json", encoding="utf-8")
+    assert build_service.node_version_default(tmp_path, {}) == {}

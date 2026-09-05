@@ -251,3 +251,30 @@ export function ServerIcon({ className }: IconProps) {
     </Svg>
   );
 }
+
+export function ChartIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+      <path d="M7 15l3.5-4 3 2.5L18 8" />
+    </Svg>
+  );
+}
+
+export function BanIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m5.6 5.6 12.8 12.8" />
+    </Svg>
+  );
+}
+
+export function LayersIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="m12 2 9 5-9 5-9-5 9-5Z" />
+      <path d="m3 12 9 5 9-5M3 17l9 5 9-5" />
+    </Svg>
+  );
+}

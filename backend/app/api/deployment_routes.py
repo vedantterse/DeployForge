@@ -18,10 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import CurrentUser
 from app.core.errors import ConflictError, NotFoundError
 from app.db import get_db
-from app.models.deployment import Deployment
+from app.models.deployment import BuildMethod, Deployment
 from app.models.event import DeploymentEvent
 from app.models.repository import Repository
-from app.runtime import docker
+from app.runtime import compose, docker
 from app.runtime import service as runtime_service
 from app.schemas.deployment import (
     BuildLogsOut,
@@ -60,6 +60,9 @@ def _deployment_out(
         runtime_started_at=deployment.runtime_started_at,
         runtime_stopped_at=deployment.runtime_stopped_at,
         suspended_by_admin=deployment.suspended_by_admin,
+        suspension_reason=deployment.suspension_reason,
+        compose_project=deployment.compose_project,
+        compose_services=deployment.compose_services,
         repository_id=repository.id,
         full_name=repository.full_name,
         deploy_path=repository.deploy_path,
@@ -210,8 +213,19 @@ async def restart_deployment(
 async def delete_deployment(
     deployment_id: uuid.UUID, current_user: CurrentUser, db: DbSession
 ) -> Response:
-    """Stop the app, remove its container, and delete the record."""
+    """
+    Stop the app, remove its container, and delete the record.
+
+    Refused while an administrator has it suspended: otherwise the owner could
+    delete the suspended deployment, reconnect the same repository, and have a
+    clean one a moment later — which would make suspension meaningless.
+    """
     deployment, _ = await _owned_deployment(db, deployment_id, current_user.id)
+    if deployment.suspended_by_admin:
+        raise ConflictError(
+            "This deployment has been suspended by an administrator and cannot "
+            "be deleted. Contact them if you think that is a mistake."
+        )
     await runtime_service.destroy(db, deployment)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -235,7 +249,15 @@ async def get_runtime_logs(
 
     logs = ""
     running = False
-    if deployment.container_name:
+    if deployment.build_method is BuildMethod.COMPOSE and deployment.compose_project:
+        # Every service, not just the routed one: in a stack the reason the web
+        # service is failing is usually printed by the database next to it.
+        state = await docker.container_state(deployment.container_name or "")
+        running = bool(state and state.get("Running"))
+        logs = await compose.logs(deployment.compose_project, tail=tail)
+        if not logs:
+            logs = "(no output — this stack is not running)"
+    elif deployment.container_name:
         state = await docker.container_state(deployment.container_name)
         running = bool(state and state.get("Running"))
         if state is not None:

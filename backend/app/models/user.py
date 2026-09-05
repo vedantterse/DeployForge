@@ -51,6 +51,21 @@ class User(Base, UUIDMixin, TimestampMixin):
     max_deployments: Mapped[int] = mapped_column(
         Integer, nullable=False, default=3, server_default="3"
     )
+    # Whether this account may create or start deployments at all.
+    #
+    # Deliberately separate from `is_active`: disabling an account stops the
+    # person logging in and hides everything from them, which is the wrong
+    # response to "this student's app is misbehaving". Revoking deploy rights
+    # lets them keep their account and see their history while being unable to
+    # put more load on the shared machine.
+    can_deploy: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    # Why deployment was revoked, so the student sees a reason rather than a
+    # button that silently refuses.
+    deploy_block_reason: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
 
     github_connection: Mapped["GitHubConnection | None"] = relationship(
         back_populates="user",

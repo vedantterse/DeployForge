@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -36,3 +37,12 @@ class RepoOut(BaseModel):
     html_url: str
     private: bool
     updated_at: datetime | None = None
+
+    # --- what this account has already done with it ---
+    # A repository can only be connected once per target, so the list marks
+    # what is taken rather than letting a student pick it and then fail.
+    connected: bool = False
+    # Which targets inside it are already connected. `""` means the whole
+    # repository; a monorepo can have `frontend` taken and `backend` free.
+    connected_paths: list[str] = []
+    deployment_id: uuid.UUID | None = None

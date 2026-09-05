@@ -213,6 +213,8 @@ async def run_pack_build(
         "--pull-policy",
         "if-not-present",
     ]
+    if settings.pack_run_image.strip():
+        command += ["--run-image", settings.pack_run_image.strip()]
     if env_file is not None:
         command += ["--env-file", str(env_file)]
 
