@@ -25,3 +25,6 @@ cryptography==44.0.0
 # --- Tests ---
 pytest==8.3.4
 pytest-asyncio==0.25.0
+
+# Rewriting a student compose file to remove host port bindings.
+PyYAML==6.0.3

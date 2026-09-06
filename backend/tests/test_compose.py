@@ -170,3 +170,157 @@ def test_the_stack_directory_replaces_rather_than_merges(tmp_path):
 
     compose.remove_stack_dir(deployment_id)
     assert not any(compose.stack_dir_for(deployment_id).iterdir())
+
+
+# --- Host port bindings ------------------------------------------------------
+#
+# The failure these came from: two students both deploying a Next.js compose
+# file that publishes 3000. The second gets "ports are not available", and on a
+# laptop it collides with whatever is already there.
+
+import textwrap  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import yaml  # noqa: E402
+
+
+def write_stack(tmp_path, text: str, name: str = "docker-compose.yml") -> Path:
+    (tmp_path / name).write_text(textwrap.dedent(text), encoding="utf-8")
+    return tmp_path
+
+
+def test_a_published_port_becomes_an_exposed_one(tmp_path):
+    """The port stays reachable in the stack; it stops being claimed on the host."""
+    stack = write_stack(
+        tmp_path,
+        """
+        services:
+          web:
+            image: verde-store:latest
+            ports:
+              - "3000:3000"
+        """,
+    )
+
+    removed = compose.strip_published_ports(stack)
+
+    assert removed == {"web": [3000]}
+    written = yaml.safe_load((stack / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert "ports" not in written["services"]["web"]
+    assert written["services"]["web"]["expose"] == ["3000"]
+
+
+def test_the_long_port_form_is_handled(tmp_path):
+    """`docker compose config` normalizes to this shape, and files use it too."""
+    stack = write_stack(
+        tmp_path,
+        """
+        services:
+          api:
+            image: api:latest
+            ports:
+              - target: 8080
+                published: "9000"
+                protocol: tcp
+        """,
+    )
+
+    assert compose.strip_published_ports(stack) == {"api": [8080]}
+    written = yaml.safe_load((stack / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert written["services"]["api"]["expose"] == ["8080"]
+
+
+def test_a_database_beside_the_app_is_unpublished_too(tmp_path):
+    """
+    The isolation point rather than the collision one: a published 5432 puts
+    one student's database on the shared machine's network.
+    """
+    stack = write_stack(
+        tmp_path,
+        """
+        services:
+          web:
+            image: web:latest
+            ports: ["3000:3000"]
+          db:
+            image: postgres:17
+            ports: ["5432:5432"]
+        """,
+    )
+
+    assert compose.strip_published_ports(stack) == {"web": [3000], "db": [5432]}
+
+
+def test_an_override_file_cannot_put_the_binding_back(tmp_path):
+    """Compose loads the override automatically, so it has to be stripped too."""
+    stack = write_stack(
+        tmp_path,
+        """
+        services:
+          web:
+            image: web:latest
+        """,
+    )
+    write_stack(
+        stack,
+        """
+        services:
+          web:
+            ports: ["3000:3000"]
+        """,
+        name="docker-compose.override.yml",
+    )
+
+    assert compose.strip_published_ports(stack) == {"web": [3000]}
+    override = yaml.safe_load(
+        (stack / "docker-compose.override.yml").read_text(encoding="utf-8")
+    )
+    assert "ports" not in override["services"]["web"]
+
+
+def test_an_existing_expose_is_kept(tmp_path):
+    stack = write_stack(
+        tmp_path,
+        """
+        services:
+          web:
+            image: web:latest
+            expose: ["9229"]
+            ports: ["3000:3000"]
+        """,
+    )
+
+    compose.strip_published_ports(stack)
+    written = yaml.safe_load((stack / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert written["services"]["web"]["expose"] == ["9229", "3000"]
+
+
+def test_a_stack_without_bindings_is_left_untouched(tmp_path):
+    original = """
+        services:
+          web:
+            image: web:latest
+            expose: ["3000"]
+        """
+    stack = write_stack(tmp_path, original)
+    before = (stack / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert compose.strip_published_ports(stack) == {}
+    assert (stack / "docker-compose.yml").read_text(encoding="utf-8") == before
+
+
+def test_an_unparseable_file_is_left_alone(tmp_path):
+    """
+    Compose has already accepted the file, so failing to parse it here means
+    this function is wrong — and breaking a working deployment over that would
+    be worse than leaving a port published.
+    """
+    stack = tmp_path
+    (stack / "docker-compose.yml").write_text("services: [oh: no: :", encoding="utf-8")
+
+    assert compose.strip_published_ports(stack) == {}
+    assert (stack / "docker-compose.yml").read_text(encoding="utf-8")
+
+
+def test_nothing_happens_without_a_compose_file(tmp_path):
+    assert compose.strip_published_ports(tmp_path) == {}

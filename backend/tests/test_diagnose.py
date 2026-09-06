@@ -86,3 +86,72 @@ def test_the_tail_reader_returns_the_end_of_the_file(tmp_path):
     log = tmp_path / "build.log"
     log.write_text("start\n" + "x" * 50_000 + "\nTHE END", encoding="utf-8")
     assert diagnose.read_tail(log).endswith("THE END")
+
+
+# --- Why a container died ----------------------------------------------------
+#
+# The failure these came from: a student's app pointed at a MongoDB Atlas
+# cluster that no longer exists. The platform said "exit code None".
+
+MONGO_DNS_LOG = """
+node:internal/dns/promises:295
+    this.reject(new DNSException(err, this.bindingName, this.hostname));
+                ^
+Error: querySrv ENOTFOUND _mongodb._tcp.cluster0.ttul0wi.mongodb.net
+    at QueryReqWrap.onresolve [as oncomplete] (node:internal/dns/promises:295:17) {
+  errno: undefined,
+  code: 'ENOTFOUND',
+  syscall: 'querySrv',
+  hostname: '_mongodb._tcp.cluster0.ttul0wi.mongodb.net'
+}
+Node.js v22.23.2
+"""
+
+
+def test_a_missing_mongo_cluster_is_named_as_such():
+    found = diagnose.diagnose_runtime(MONGO_DNS_LOG)
+    assert found is not None
+    assert "MongoDB" in found.summary
+    assert "Atlas" in found.fix
+
+
+def test_a_refused_connection_is_not_confused_with_a_missing_host():
+    found = diagnose.diagnose_runtime(
+        "Error: connect ECONNREFUSED 172.18.0.3:5432"
+    )
+    assert found is not None
+    assert "nothing was listening" in found.summary
+
+
+def test_rejected_credentials_are_named():
+    found = diagnose.diagnose_runtime(
+        "MongoServerError: bad auth : authentication failed"
+    )
+    assert found is not None
+    assert "rejected" in found.summary
+
+
+def test_an_unknown_crash_is_not_guessed_at():
+    """A confident wrong explanation is worse than none."""
+    assert diagnose.diagnose_runtime("Segmentation fault (core dumped)") is None
+
+
+def test_an_unknown_exit_still_points_at_the_runtime_log():
+    message = diagnose.explain_exit("something odd", 137)
+    assert "exit code 137" in message
+    assert "runtime log" in message
+
+
+def test_an_unknown_exit_code_is_not_printed_as_none():
+    """
+    A container whose state could not be read has no exit code. "exit code
+    None" reads like the app returned something called None.
+    """
+    message = diagnose.explain_exit("something odd", None)
+    assert "None" not in message
+
+
+def test_a_recognized_cause_comes_before_the_raw_detail():
+    message = diagnose.explain_exit(MONGO_DNS_LOG, None)
+    assert message.startswith("Your app could not find its MongoDB cluster")
+    assert "exited immediately" in message

@@ -510,6 +510,11 @@ async def _prepare_compose(
     # The stack is started from its own copy, which outlives this build.
     stack_dir = compose.replace_stack_dir(deployment.id, source)
 
+    # Done after the config above was resolved, so routing still sees which
+    # service the author published — that is the best signal of which one
+    # serves traffic, and it is worth reading before it is taken away.
+    unpublished = compose.strip_published_ports(stack_dir)
+
     deployment.compose_project = project
     deployment.compose_services = services
     deployment.container_name = compose.container_name_for(project, web_service)
@@ -524,6 +529,20 @@ async def _prepare_compose(
         f"  routed to  {web_service}:{deployment.app_port}\n"
         f"  workdir    {stack_dir}\n",
     )
+    if unpublished:
+        listed = "; ".join(
+            f"{name} ({', '.join(str(p) for p in ports)})"
+            for name, ports in unpublished.items()
+        )
+        _append(
+            log_file,
+            f"  note       host port bindings removed from {listed}.\n"
+            f"             Your services still reach each other by name, and "
+            f"this app is\n"
+            f"             reachable at its own URL. Publishing a port would "
+            f"claim it on the\n"
+            f"             machine every deployment shares.\n",
+        )
     return True, None
 
 

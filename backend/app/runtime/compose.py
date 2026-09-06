@@ -18,6 +18,8 @@ import json
 import logging
 from pathlib import Path
 
+import yaml
+
 from app.config import settings
 from app.runtime.docker import CommandResult, _run, _stream
 
@@ -29,6 +31,15 @@ COMPOSE_FILENAMES = (
     "compose.yml",
     "docker-compose.yaml",
     "docker-compose.yml",
+)
+
+# Compose loads these automatically alongside the main file, so a port
+# removed from one could be put back by the other.
+OVERRIDE_FILENAMES = (
+    "compose.override.yaml",
+    "compose.override.yml",
+    "docker-compose.override.yaml",
+    "docker-compose.override.yml",
 )
 
 # Service names that conventionally mean "this is the one users talk to",
@@ -171,6 +182,71 @@ def _exposed_port(service: dict) -> int | None:
         except ValueError:
             continue
     return None
+
+
+def strip_published_ports(stack_dir: Path) -> dict[str, list[int]]:
+    """
+    Take host port bindings out of the stack's own compose files.
+
+    Every `ports:` entry becomes an `expose:` of the same container port. The
+    service stays reachable by name from inside the stack and from the router,
+    and stops competing for a port on the machine everyone shares.
+
+    Returns the container ports removed, per service, so the build log can say
+    what was changed rather than quietly rewriting someone's file.
+
+    Operates on the stack's working copy, never on anything the student can
+    see, and leaves a file it cannot parse alone: Compose has already accepted
+    it, so a parse failure here means this function is wrong, not the file, and
+    breaking a working deployment over it would be the worse outcome.
+    """
+    removed: dict[str, list[int]] = {}
+
+    for name in (*COMPOSE_FILENAMES, *OVERRIDE_FILENAMES):
+        path = stack_dir / name
+        if not path.is_file():
+            continue
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, OSError) as exc:
+            logger.warning("Leaving %s alone, could not parse it: %s", name, exc)
+            continue
+        if not isinstance(document, dict):
+            continue
+
+        services = document.get("services")
+        if not isinstance(services, dict):
+            continue
+
+        changed = False
+        for service_name, service in services.items():
+            if not isinstance(service, dict) or not service.get("ports"):
+                continue
+
+            targets = [
+                target
+                for target in (_target_port(p) for p in service["ports"])
+                if target is not None
+            ]
+            del service["ports"]
+            changed = True
+
+            # Keep the port reachable inside the stack, just not on the host.
+            exposed = [str(v) for v in service.get("expose") or []]
+            for target in targets:
+                if str(target) not in exposed:
+                    exposed.append(str(target))
+            if exposed:
+                service["expose"] = exposed
+
+            removed.setdefault(service_name, []).extend(targets)
+
+        if changed:
+            path.write_text(
+                yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+            )
+
+    return removed
 
 
 def container_name_for(project: str, service: str) -> str:

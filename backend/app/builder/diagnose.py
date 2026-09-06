@@ -159,6 +159,101 @@ _SIGNATURES: list[tuple[re.Pattern[str], Diagnosis]] = [
     ),
 ]
 
+# Why a container that was built successfully will not stay up.
+#
+# Kept apart from the build signatures because the two answer different
+# questions and a build cause would be a confusing thing to show for a crash
+# on boot. Ordered most specific first, same as above.
+_RUNTIME_SIGNATURES: list[tuple[re.Pattern[str], Diagnosis]] = [
+    (
+        re.compile(r"querySrv\s+ENOTFOUND\s+_mongodb\._tcp\.(\S+)", re.I),
+        Diagnosis(
+            summary=(
+                "Your app could not find its MongoDB cluster: the address in "
+                "the connection string does not exist in DNS."
+            ),
+            fix=(
+                "The cluster was most likely deleted or renamed — a paused "
+                "Atlas cluster still resolves, a deleted one does not. Check "
+                "it in Atlas, then set the current connection string as an "
+                "environment variable on this app rather than committing it."
+            ),
+        ),
+    ),
+    (
+        re.compile(r"(ENOTFOUND|EAI_AGAIN|Name or service not known|"
+                   r"getaddrinfo failed|nodename nor servname)", re.I),
+        Diagnosis(
+            summary="Your app could not resolve a hostname it tried to connect to.",
+            fix=(
+                "Usually a database or API address that is wrong, or one that "
+                "only exists on your own machine — `localhost` inside a "
+                "container means the container itself, not your laptop. "
+                "Services in the same stack reach each other by service name."
+            ),
+        ),
+    ),
+    (
+        re.compile(r"(ECONNREFUSED|Connection refused|could not connect to server)", re.I),
+        Diagnosis(
+            summary="Your app reached the address it wanted, but nothing was listening.",
+            fix=(
+                "If the database is part of this stack, it may still be "
+                "starting — use `depends_on` so your app waits for it. If it "
+                "is elsewhere, check the port and that it accepts connections "
+                "from outside its own host."
+            ),
+        ),
+    ),
+    (
+        re.compile(r"(bad auth|Authentication failed|authentication failed|"
+                   r"password authentication failed|SASL)", re.I),
+        Diagnosis(
+            summary="The database rejected your app's username or password.",
+            fix=(
+                "Check the credentials in the connection string. A password "
+                "containing @ : / or ? must be percent-encoded, which is the "
+                "usual cause when the same string works elsewhere."
+            ),
+        ),
+    ),
+    (
+        re.compile(r"EADDRINUSE|address already in use", re.I),
+        Diagnosis(
+            summary="Your app tried to listen on a port already taken inside its container.",
+            fix=(
+                "Usually two processes started from one command. Listen on "
+                "the port in the PORT environment variable, which DeployForge "
+                "sets, instead of a fixed number."
+            ),
+        ),
+    ),
+    (
+        re.compile(r"(Cannot find module|ModuleNotFoundError|ImportError: No module)", re.I),
+        Diagnosis(
+            summary="The app started and immediately could not find code it needs.",
+            fix=(
+                "A dependency is missing from package.json or requirements.txt, "
+                "or the start command points at a file that is not in the "
+                "built image. Building locally with the same Dockerfile "
+                "reproduces this."
+            ),
+        ),
+    ),
+    (
+        re.compile(r"(exec .*: not found|no such file or directory.*sh|"
+                   r"executable file not found)", re.I),
+        Diagnosis(
+            summary="The container's start command does not exist in the image.",
+            fix=(
+                "Check the CMD or ENTRYPOINT in your Dockerfile, or the "
+                "`start` script the buildpack runs. A command that works "
+                "locally may not be installed in the image."
+            ),
+        ),
+    ),
+]
+
 # Only the tail of a long log is scanned by default: a signature from a
 # previous, unrelated step is not this build's failure.
 _TAIL_CHARS = 20_000
@@ -192,6 +287,37 @@ def explain(log_text: str, fallback: str) -> str:
     if found is None:
         return fallback
     return f"{found.message()} ({fallback})"
+
+
+def diagnose_runtime(log_text: str) -> Diagnosis | None:
+    """Recognize why a container died on boot, or return None."""
+    if not log_text:
+        return None
+
+    window = log_text[-_TAIL_CHARS:]
+    for pattern, diagnosis in _RUNTIME_SIGNATURES:
+        if pattern.search(window):
+            return diagnosis
+    return None
+
+
+def explain_exit(log_text: str, exit_code: int | None) -> str:
+    """
+    Why the app will not stay up, for the student to read on the deployment.
+
+    The exit code is included only when there is one. A container whose state
+    could not be read has no code, and "exit code None" is worse than not
+    mentioning it — it reads like the app returned something called None.
+    """
+    detail = (
+        f"The container exited immediately (exit code {exit_code})."
+        if exit_code is not None
+        else "The container started and then exited immediately."
+    )
+    found = diagnose_runtime(log_text)
+    if found is None:
+        return f"{detail} Check the runtime log for what the app printed as it died."
+    return f"{found.message()} ({detail})"
 
 
 def read_tail(path, limit: int = _TAIL_CHARS) -> str:

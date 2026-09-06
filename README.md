@@ -98,6 +98,15 @@ runs on its own private network, and only its web service is additionally
 attached to the shared edge network — one student's database is unreachable
 from another student's app.
 
+**`ports:` is removed from a stack's compose file**, and the container port
+kept as `expose:`. Publishing a port means claiming it on the machine everyone
+shares: every Next.js compose file publishes 3000, so the second student to
+deploy one gets `ports are not available`, and a published `5432` would put
+their database on the host — exactly what the isolation above exists to
+prevent. Nothing is lost: the router reaches a stack by container name over the
+shared network, and services still reach each other by service name. The build
+log says what was removed rather than rewriting a file silently.
+
 Administrators have three distinct levers, kept separate because they answer
 different problems:
 
@@ -318,6 +327,11 @@ Two logs are kept apart on purpose:
 - the **runtime log** says why the app that was built will not stay up. For a
   compose stack it covers every service, because the reason the web service is
   failing is usually printed by the database next to it.
+
+Both are read the same way: a container that dies on boot has its output
+matched against known failures, so an unreachable database or a rejected
+password is named as such instead of "exit code 1". An unrecognized crash keeps
+the raw detail — a confident wrong explanation would be worse than none.
 
 Environment variables are encrypted at rest and injected at build and run time.
 Restart the app for changes to take effect.

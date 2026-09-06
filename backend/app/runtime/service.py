@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.builder import diagnose
 from app.config import settings
 from app.core.crypto import decrypt_value
 from app.core.errors import AppError
@@ -239,14 +240,13 @@ async def start(
     state = await docker.container_state(container)
 
     if not state or not state.get("Running"):
-        logs = await docker.container_logs(container, tail=40)
+        # More than the 40 lines shown in the event: the reason a container
+        # dies is often a stack trace, and the useful line is above its tail.
+        logs = await docker.container_logs(container, tail=200)
         exit_code = (state or {}).get("ExitCode")
-        await _fail(
-            db,
-            deployment,
-            f"The container exited immediately (exit code {exit_code}). "
-            "Check the runtime log for what the app printed as it died.",
-        )
+        message = diagnose.explain_exit(logs, exit_code)
+
+        await _fail(db, deployment, message)
         await record(
             db,
             deployment.id,
@@ -254,10 +254,7 @@ async def start(
             f"Container exited on boot. Last output:\n{logs[-1500:]}",
             level=EventLevel.ERROR,
         )
-        raise RuntimeError_(
-            f"The app started and then exited (exit code {exit_code}). "
-            "Its output is in the runtime log."
-        )
+        raise RuntimeError_(message)
 
     # The container is alive, so the deployment it replaces can go. This has to
     # happen before the promotion below, not after: two rows may not hold the
