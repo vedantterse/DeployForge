@@ -46,6 +46,10 @@ class RepoOut(BaseModel):
     # A repository can only be connected once per target, so the list marks
     # what is taken rather than letting a student pick it and then fail.
     connected: bool = False
+    # The real state of the latest deployment: "running", "failed",
+    # "building"… A connected repository whose build failed is not deployed,
+    # and saying otherwise is the difference between a status and a decoration.
+    deployment_status: str | None = None
     # Which targets inside it are already connected. `""` means the whole
     # repository; a monorepo can have `frontend` taken and `backend` free.
     connected_paths: list[str] = []

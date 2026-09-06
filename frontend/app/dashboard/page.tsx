@@ -1,5 +1,9 @@
 /**
- * The student's dashboard: everything they have deployed, and its state.
+ * The student's dashboard: the apps they own, and the state of each.
+ *
+ * An app is a repository target they connected; a deployment is one attempt to
+ * build and run it. This lists apps — rebuilding an app does not give them a
+ * second one, and the builds live inside the app that owns them.
  *
  * Polls while anything is in motion and stops when everything settles, so a
  * page left open on a finished build is not a permanent source of requests.
@@ -10,7 +14,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import DeploymentCard from "@/components/DeploymentCard";
+import AppCard from "@/components/AppCard";
 import RequireAuth from "@/components/RequireAuth";
 import {
   Alert,
@@ -28,12 +32,8 @@ import {
   RocketIcon,
   ServerIcon,
 } from "@/components/Icons";
-import {
-  isBusy,
-  isRunning,
-  listDeployments,
-  type Deployment,
-} from "@/lib/deployments";
+import { appIsBusy, listApps, type App } from "@/lib/apps";
+import { isRunning } from "@/lib/deployments";
 import type { User } from "@/lib/auth";
 
 // Fast enough that a build feels live, slow enough to be unnoticeable.
@@ -44,14 +44,14 @@ export default function DashboardPage() {
 }
 
 function Dashboard({ user }: { user: User }) {
-  const [deployments, setDeployments] = useState<Deployment[] | null>(null);
+  const [apps, setApps] = useState<App[] | null>(null);
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const rows = await listDeployments();
-      setDeployments(rows);
+      const rows = await listApps();
+      setApps(rows);
       return rows;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load your apps.");
@@ -66,7 +66,7 @@ function Dashboard({ user }: { user: User }) {
     async function tick() {
       const rows = await load();
       if (!active) return;
-      if (rows.some((d) => isBusy(d.status))) {
+      if (rows.some(appIsBusy)) {
         timer.current = setTimeout(tick, POLL_MS);
       }
     }
@@ -78,23 +78,23 @@ function Dashboard({ user }: { user: User }) {
     };
   }, [load]);
 
-  function replace(next: Deployment) {
-    setDeployments((rows) =>
-      rows ? rows.map((d) => (d.id === next.id ? next : d)) : rows,
-    );
-    // A start or stop settles asynchronously; pick the result up shortly.
+  // A start or stop settles asynchronously and changes the app's current
+  // deployment, so the app is re-read rather than patched in place.
+  function refresh() {
     setTimeout(load, 1500);
   }
 
-  const running = deployments?.filter((d) => isRunning(d.status)).length ?? 0;
-  const failed = deployments?.filter((d) => d.status === "failed").length ?? 0;
+  const running =
+    apps?.filter((a) => a.current && isRunning(a.current.status)).length ?? 0;
+  const failed =
+    apps?.filter((a) => a.current?.status === "failed").length ?? 0;
 
   return (
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <Eyebrow>Your workspace</Eyebrow>
-        <h1 className="mt-3 text-[2rem] font-semibold leading-tight">My apps</h1>
+          <h1 className="mt-3 text-[2rem] font-semibold leading-tight">My apps</h1>
           <p className="mt-1.5 text-sm text-[var(--text-muted)]">
             Everything you have deployed, and whether it is up.
           </p>
@@ -125,19 +125,19 @@ function Dashboard({ user }: { user: User }) {
       <div className="grid gap-4 sm:grid-cols-3">
         <Metric
           label="Running"
-          value={deployments ? running : "—"}
+          value={apps ? running : "—"}
           tone={running > 0 ? "ok" : "neutral"}
           hint={running > 0 ? "serving traffic" : "nothing live right now"}
           icon={<ServerIcon className="h-4 w-4" />}
         />
         <Metric
           label="Total apps"
-          value={deployments ? deployments.length : "—"}
+          value={apps ? apps.length : "—"}
           icon={<BoxIcon className="h-4 w-4" />}
         />
         <Metric
           label="Failed"
-          value={deployments ? failed : "—"}
+          value={apps ? failed : "—"}
           tone={failed > 0 ? "danger" : "neutral"}
           hint={failed > 0 ? "check the build log" : "none"}
           icon={<AlertIcon className="h-4 w-4" />}
@@ -145,15 +145,15 @@ function Dashboard({ user }: { user: User }) {
       </div>
 
       <section>
-        <SectionTitle hint="Newest first.">Deployments</SectionTitle>
+        <SectionTitle hint="Most recently connected first.">Apps</SectionTitle>
 
-        {deployments === null ? (
+        {apps === null ? (
           <div className="space-y-3">
             {[0, 1, 2].map((i) => (
               <Skeleton key={i} className="h-28" />
             ))}
           </div>
-        ) : deployments.length === 0 ? (
+        ) : apps.length === 0 ? (
           <EmptyState
             icon={<BoxIcon className="h-10 w-10" />}
             title="Nothing deployed yet"
@@ -176,12 +176,12 @@ function Dashboard({ user }: { user: User }) {
           </EmptyState>
         ) : (
           <div className="space-y-3">
-            {deployments.map((d, i) => (
-              <DeploymentCard
-                key={d.id}
-                deployment={d}
+            {apps.map((app, i) => (
+              <AppCard
+                key={app.id}
+                app={app}
                 index={i}
-                onChange={replace}
+                onChange={refresh}
                 onError={setError}
               />
             ))}

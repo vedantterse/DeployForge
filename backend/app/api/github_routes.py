@@ -162,28 +162,30 @@ async def list_repos(current_user: CurrentUser, db: DbSession) -> list[RepoOut]:
     for github_repo_id, deploy_path, _repo_id in rows:
         connected.setdefault(github_repo_id, []).append(deploy_path or "")
 
-    latest_deployment = {
-        repo_id: deployment_id
-        for repo_id, deployment_id in (
-            await db.execute(
-                select(Repository.github_repo_id, Deployment.id)
-                .join(Deployment, Deployment.repository_id == Repository.id)
-                .where(Repository.user_id == current_user.id)
-                .order_by(Deployment.created_at.desc())
-            )
-        ).all()
-    }
+    # Newest first, so the dict comprehension keeps the most recent per repo.
+    latest_deployment: dict[int, tuple] = {}
+    for repo_id, deployment_id, status in (
+        await db.execute(
+            select(Repository.github_repo_id, Deployment.id, Deployment.status)
+            .join(Deployment, Deployment.repository_id == Repository.id)
+            .where(Repository.user_id == current_user.id)
+            .order_by(Deployment.created_at.desc())
+        )
+    ).all():
+        latest_deployment.setdefault(repo_id, (deployment_id, status))
 
     out: list[RepoOut] = []
     for repo in repos:
         paths = connected.get(repo["github_repo_id"], [])
+        latest = latest_deployment.get(repo["github_repo_id"])
         out.append(
             RepoOut.model_validate(
                 {
                     **repo,
                     "connected": bool(paths),
                     "connected_paths": sorted(paths),
-                    "deployment_id": latest_deployment.get(repo["github_repo_id"]),
+                    "deployment_id": latest[0] if latest else None,
+                    "deployment_status": latest[1].value if latest else None,
                 }
             )
         )

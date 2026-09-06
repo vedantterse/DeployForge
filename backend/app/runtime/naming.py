@@ -35,21 +35,22 @@ def slugify(value: str, limit: int = 30) -> str:
 
 def subdomain_for(
     *,
-    deployment_id: uuid.UUID,
+    repository_id: uuid.UUID,
     repository_name: str,
     deploy_path: str | None = None,
 ) -> str:
     """
     The host label the app answers on.
 
-    Shape: `<repo>[-<path>]-<id6>`. The deployment id suffix is what makes it
-    unique platform-wide — two students may both deploy a repo called "todo",
-    and both are entitled to a working URL.
+    Shape: `<repo>[-<path>]-<id6>`. The suffix comes from the repository — the
+    *app* — and not from one build of it, so redeploying keeps the URL the
+    student has already shared. Two students may both deploy a repo called
+    "todo", and the suffix is what keeps both of their URLs working.
     """
     parts = [slugify(repository_name)]
     if deploy_path:
         parts.append(slugify(deploy_path.replace("/", "-"), 16))
-    parts.append(deployment_id.hex[:_SUFFIX_LENGTH])
+    parts.append(repository_id.hex[:_SUFFIX_LENGTH])
 
     label = _DASHES.sub("-", "-".join(p for p in parts if p)).strip("-")
     return label[:MAX_LABEL_LENGTH].strip("-")

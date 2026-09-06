@@ -16,7 +16,17 @@ from typing import TYPE_CHECKING
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -82,6 +92,22 @@ class DeploymentStatus(str, enum.Enum):
 
 class Deployment(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "deployments"
+    __table_args__ = (
+        # One app, one hostname, one thing answering on it.
+        #
+        # The subdomain identifies the *app*, so every deployment of it shares
+        # the name and a plain UNIQUE index would reject an app's second build.
+        # What must never happen is two of them serving that name at once, and
+        # a partial index says precisely that — leaving the router with exactly
+        # one answer for every host it is asked about, enforced by the database
+        # rather than by the application remembering to.
+        Index(
+            "uq_deployments_live_subdomain",
+            "subdomain",
+            unique=True,
+            postgresql_where=text("status IN ('running', 'live')"),
+        ),
+    )
 
     repository_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -132,9 +158,12 @@ class Deployment(Base, UUIDMixin, TimestampMixin):
 
     # --- Runtime ---
     # The host label the app answers on, e.g. "todo-a1b2c3d4" reachable at
-    # todo-a1b2c3d4.localhost. Unique platform-wide: it is a routing key.
+    # todo-a1b2c3d4.localhost. Derived from the repository, so every deployment
+    # of one app carries the same value and a student's link survives a
+    # redeploy. Uniqueness is enforced among live rows only — see
+    # `__table_args__`.
     subdomain: Mapped[str | None] = mapped_column(
-        String(255), nullable=True, unique=True, index=True
+        String(255), nullable=True, index=True
     )
     container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     container_name: Mapped[str | None] = mapped_column(String(128), nullable=True)

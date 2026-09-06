@@ -104,13 +104,23 @@ async def running_count(db: AsyncSession, user_id: uuid.UUID) -> int:
 
 
 async def check_quota(
-    db: AsyncSession, user: User, *, excluding: uuid.UUID | None = None
+    db: AsyncSession,
+    user: User,
+    *,
+    excluding: uuid.UUID | None = None,
+    excluding_repository: uuid.UUID | None = None,
 ) -> None:
     """
     Refuse to start another app when the user is at their limit.
 
-    `excluding` skips the deployment being restarted, which already holds one
-    of the user's slots and must not be counted against itself.
+    The limit is on *apps*, not on builds. `excluding_repository` leaves out
+    every deployment of the app being started: a redeploy briefly runs the new
+    container alongside the one it replaces, and counting both would refuse a
+    student their own slot. The app it is about to occupy is accounted for by
+    comparing against the limit with `>=`.
+
+    `excluding` skips a single deployment — the one being restarted, which
+    already holds a slot and must not be counted against itself.
     """
     stmt = select(func.count()).select_from(Deployment).where(
         Deployment.user_id == user.id,
@@ -118,6 +128,8 @@ async def check_quota(
     )
     if excluding is not None:
         stmt = stmt.where(Deployment.id != excluding)
+    if excluding_repository is not None:
+        stmt = stmt.where(Deployment.repository_id != excluding_repository)
     running = (await db.execute(stmt)).scalar_one()
 
     if running >= user.max_deployments:
@@ -193,20 +205,22 @@ async def start(
             or "An administrator has revoked your permission to deploy."
         )
 
-    await check_quota(db, user, excluding=deployment.id)
+    await check_quota(
+        db, user, excluding=deployment.id, excluding_repository=repository.id
+    )
 
     if not await docker.daemon_available():
         raise RuntimeError_("The Docker daemon is not reachable on the server.")
     await docker.ensure_network()
 
-    # Names are assigned once and then reused, so a restart keeps the URL the
-    # student has already shared.
-    if not deployment.subdomain:
-        deployment.subdomain = naming.subdomain_for(
-            deployment_id=deployment.id,
-            repository_name=repository.name,
-            deploy_path=repository.deploy_path,
-        )
+    # The URL belongs to the app, not to one build of it. Every deployment of
+    # this repository resolves to the same host, so redeploying replaces what
+    # is behind the link rather than issuing a new one.
+    deployment.subdomain = naming.subdomain_for(
+        repository_id=repository.id,
+        repository_name=repository.name,
+        deploy_path=repository.deploy_path,
+    )
     env = await environment_for(db, repository.id)
 
     deployment.status = DeploymentStatus.STARTING
@@ -245,6 +259,13 @@ async def start(
             "Its output is in the runtime log."
         )
 
+    # The container is alive, so the deployment it replaces can go. This has to
+    # happen before the promotion below, not after: two rows may not hold the
+    # same hostname at once, and the database enforces that. Doing it any
+    # earlier would take a working app down in order to put up one that turns
+    # out not to boot.
+    await _supersede(db, deployment, repository, actor=actor)
+
     deployment.status = DeploymentStatus.RUNNING
     deployment.runtime_started_at = datetime.now(timezone.utc)
     deployment.runtime_stopped_at = None
@@ -260,6 +281,68 @@ async def start(
         actor=actor,
     )
     return deployment
+
+
+async def _supersede(
+    db: AsyncSession,
+    deployment: Deployment,
+    repository: Repository,
+    *,
+    actor: str,
+) -> None:
+    """
+    Retire the app's earlier deployments now that a newer one is up.
+
+    An app is one thing with one URL. Its deployments are the attempts to run
+    that thing, and exactly one of them is current — so promoting a new one
+    means stopping whatever it replaced. Without this, a redeploy leaves the
+    previous container running and two of them claim the same hostname; the
+    router would have to pick, and the student's app would answer differently
+    depending on which.
+
+    A container that will not stop is logged and left: the new deployment is
+    healthy and reporting the app as broken over a stale sibling would be a
+    worse answer than a leaked container an admin can see.
+    """
+    siblings = (
+        await db.execute(
+            select(Deployment).where(
+                Deployment.repository_id == repository.id,
+                Deployment.id != deployment.id,
+                Deployment.status.in_(
+                    [
+                        DeploymentStatus.RUNNING,
+                        DeploymentStatus.LIVE,
+                        DeploymentStatus.STARTING,
+                    ]
+                ),
+            )
+        )
+    ).scalars().all()
+
+    for old in siblings:
+        try:
+            await _tear_down(old)
+        except Exception as exc:  # noqa: BLE001 — see docstring
+            logger.warning(
+                "Could not stop superseded deployment %s: %s", old.id, exc
+            )
+        old.status = DeploymentStatus.STOPPED
+        old.container_id = None
+        old.runtime_stopped_at = datetime.now(timezone.utc)
+
+    if siblings:
+        await db.commit()
+        for old in siblings:
+            await record(
+                db,
+                old.id,
+                "stop",
+                "Replaced by a newer deployment of this app.",
+                actor=actor,
+                commit=False,
+            )
+        await db.commit()
 
 
 async def _start_container(
@@ -506,6 +589,56 @@ async def destroy(
 # Reconciliation
 # --------------------------------------------------------------------------
 
+async def release_interrupted_builds(db: AsyncSession) -> int:
+    """
+    Fail builds that were in flight when this process last stopped.
+
+    A build runs as a background task owning a `docker build` or `pack` child
+    process. Both die with the server — a restart, a crash, a reboot — and the
+    row is left saying `building` with nothing building it. Because the UI
+    refuses to start a second build while one is in flight, that state is a
+    dead end: the deployment can never be built again.
+
+    Nothing that was building when the process started can still be building,
+    so this is safe to run unconditionally at startup. Returns how many rows it
+    released.
+    """
+    stuck = (
+        await db.execute(
+            select(Deployment).where(
+                Deployment.status.in_(
+                    [
+                        DeploymentStatus.QUEUED,
+                        DeploymentStatus.BUILDING,
+                        DeploymentStatus.PUSHING,
+                    ]
+                )
+            )
+        )
+    ).scalars().all()
+
+    for deployment in stuck:
+        deployment.status = DeploymentStatus.FAILED
+        deployment.build_finished_at = datetime.now(timezone.utc)
+        deployment.error_message = (
+            "The build was interrupted when the server restarted, so it never "
+            "finished. Nothing is wrong with your project — press Rebuild."
+        )
+        await record(
+            db,
+            deployment.id,
+            "build",
+            "Build interrupted by a server restart.",
+            level=EventLevel.WARNING,
+            commit=False,
+        )
+
+    if stuck:
+        await db.commit()
+        logger.info("Released %d interrupted build(s)", len(stuck))
+    return len(stuck)
+
+
 async def reconcile(db: AsyncSession) -> int:
     """
     Make the database agree with what Docker is actually running.
@@ -517,6 +650,8 @@ async def reconcile(db: AsyncSession) -> int:
 
     Called at startup. Returns how many rows it corrected.
     """
+    corrected = await release_interrupted_builds(db)
+
     rows = (
         await db.execute(
             select(Deployment).where(
@@ -532,12 +667,11 @@ async def reconcile(db: AsyncSession) -> int:
     ).scalars().all()
 
     if not rows:
-        return 0
+        return corrected
     if not await docker.daemon_available():
-        logger.warning("Docker unreachable; skipping reconciliation")
-        return 0
+        logger.warning("Docker unreachable; skipping container reconciliation")
+        return corrected
 
-    corrected = 0
     for deployment in rows:
         state = (
             await docker.container_state(deployment.container_name)

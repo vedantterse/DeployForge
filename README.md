@@ -21,26 +21,63 @@ GitHub repo ─> download ─> detect ─> build ─> registry ─> run ─> URL
 **Three build paths**, chosen from the files actually downloaded — never from a
 stale detection row:
 
-| Found in the target | How it is built | What runs |
+| What you picked | How it is built | What runs |
 |---|---|---|
-| `docker-compose.yml` / `compose.yaml` | `docker compose up --build` | **every service in the file** |
-| `Dockerfile` | `docker build` | one container |
-| Neither | Cloud Native Buildpacks (`pack`) | one container |
+| A directory with `docker-compose.yml` | `docker compose up --build` | **every service in the file** |
+| A directory with a `Dockerfile` | `docker build` | one container |
+| A directory with neither | Cloud Native Buildpacks (`pack`) | one container |
+| **Several directories** | each on its own terms, then composed | **all of them, wired together** |
 
 Compose wins over a Dockerfile beside it: when a repository has both, the
 compose file is the author saying "this app is these services together".
 
-**Monorepos.** A repository with `frontend/` and `backend/` offers both as
-separate targets. Each is connected and deployed independently, with its own
-URL, environment variables and lifecycle.
+**Monorepos, together or apart.** A repository with `frontend/` and `backend/`
+offers both. Tick one to deploy it alone; tick several and they become **one
+deployment** — each directory built on its own terms, then run together on a
+private network.
 
-**One target, one deployment.** A target that is already connected is marked in
-the repository list and cannot be selected again — a monorepo's *other*
-directories stay available.
+That last part is the point: a frontend is useless without the backend it
+calls. Services in a stack reach each other by name, and the address is
+injected for them:
+
+```
+frontend  ->  BACKEND_URL=http://backend:8080
+backend   ->  FRONTEND_URL=http://frontend:8080
+```
+
+No hostname is hardcoded, and a variable you set yourself is never overwritten.
+One service gets the public URL (a directory named `frontend`, `web`, `client`
+… or the first you picked); the rest are reachable only from inside the stack.
+
+**One target, one app.** A target that is already connected is marked in the
+repository list and cannot be selected again — a monorepo's *other* directories
+stay available.
+
+### Apps and deployments
+
+An **app** is a target a student connected. A **deployment** is one attempt to
+build and run it. Rebuilding gives an app another deployment; it does not give
+the student another app, and the dashboard counts apps.
+
+Three things follow, and all three are what a student would assume anyway:
+
+- **The URL belongs to the app.** It is derived from the app, not from a build
+  of it, so a link that was shared still works after a redeploy. The database
+  enforces that only one deployment is live on a hostname at a time.
+- **A new deployment replaces the one before it** — but only once it has
+  proved it can boot. The old container is stopped after the new one is
+  healthy, never before, so a redeploy that fails to start leaves the working
+  app up.
+- **A failed redeploy does not take an app down.** While something is running,
+  that is the app's state; the failure is in the history, where its log is.
+
+Deleting an app removes its containers, its history and the connection, so the
+repository can be connected again. Deleting one deployment removes only that
+build from the history.
 
 ### Routing
 
-Every deployment gets a hostname: `<repo>-<id6>.localhost`. Browsers resolve
+Every app gets a hostname: `<repo>-<id6>.localhost`. Browsers resolve
 any `*.localhost` name to the loopback address with no DNS or hosts entry,
 which is what makes per-app URLs work on a laptop.
 
@@ -66,7 +103,7 @@ different problems:
 
 | Lever | Effect |
 |---|---|
-| **Quota** | how many apps this account may run at once |
+| **Quota** | how many apps this account may run at once (builds of one app count once) |
 | **Block deploys** | account keeps working; cannot create, build or start anything |
 | **Disable account** | cannot log in at all |
 | **Suspend a project** | stopped, and the owner cannot start, delete or re-add it |
@@ -266,13 +303,18 @@ fetched.
 Sign up → **Deploy new** → **Authorize GitHub** → pick a repository → pick what
 inside it to deploy → **Build and deploy** → **Start**.
 
+That creates an app. Opening it shows its URL, its environment variables and
+every build it has had; **Redeploy** builds it again from the latest commit.
+
 The build runs in the background and its log streams on the deployment page.
 The first buildpack build on a machine downloads a large builder image, so it
 takes a while; Dockerfile and Compose builds have no such cost.
 
 Two logs are kept apart on purpose:
 
-- the **build log** says why no image could be produced;
+- the **build log** says why no image could be produced. Recognised failures
+  are explained in plain words on the deployment itself — "change `next build
+  --turbopack` to `next build`" rather than "exit status 1";
 - the **runtime log** says why the app that was built will not stay up. For a
   compose stack it covers every service, because the reason the web service is
   failing is usually printed by the database next to it.
@@ -299,7 +341,7 @@ deploy flow at all — four screens instead:
 ```
 backend/
   app/
-    api/          route handlers, including the router's config endpoint
+    api/          route handlers: apps, deployments, admin, the router's config
     auth/         JWT issuing, hashing, dependencies
     builder/      docker build, buildpacks, compose preparation, registry push
     detection/    pure repository analysis — no network, no database
@@ -307,7 +349,7 @@ backend/
     models/       SQLAlchemy tables
     runtime/      container and stack lifecycle, naming, ports, reconciliation
 frontend/
-  app/            routes: landing, auth, student dashboard, admin console
+  app/            routes: landing, auth, apps and their builds, admin console
   components/     design system (ui.tsx), charts, feature components
   lib/            typed API client
 ```
@@ -317,7 +359,14 @@ frontend/
 - **Reconciliation at startup.** Deployment rows outlive the process that wrote
   them. On boot the API checks every supposedly-running deployment against
   Docker and corrects the ones that are not, so the dashboard never claims an
-  app is up when it is not.
+  app is up when it is not. The same sweep fails builds that were in flight
+  when the process stopped — otherwise a restart mid-build leaves a row stuck
+  on `building` for ever, with no way to retry it.
+- **One live deployment per hostname, enforced by the database.** A partial
+  unique index (`uq_deployments_live_subdomain`) covers only rows that are
+  running. An app's builds all share its hostname, so an outright UNIQUE
+  constraint would reject the second one; what must never happen is two of them
+  serving that name at once, and that is what the index says.
 - **The routing table is never returned empty.** Traefik keeps its previous
   configuration when handed an empty one, so a sentinel route is always
   included. Without it, stopping the last running app leaves its URL pointing

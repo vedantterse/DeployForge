@@ -34,6 +34,9 @@ class CandidateOut(BaseModel):
     # unique-constraint error on the next request.
     already_connected: bool = False
     deployment_id: uuid.UUID | None = None
+    # What actually became of it, so the picker can say "Failed" rather than
+    # claiming a target is deployed when its build never finished.
+    deployment_status: str | None = None
 
 
 class ScanOut(BaseModel):
@@ -55,10 +58,28 @@ class ScanOut(BaseModel):
 
 
 class SelectTargetRequest(BaseModel):
-    """Choose which candidate from a scan to connect."""
+    """
+    Choose what to connect from a scan.
+
+    One `deploy_path` connects a single directory. Several `deploy_paths`
+    connect them as one deployment running together on a private network —
+    a frontend and the backend it calls are one app, not two.
+    """
 
     scan_token: str
     deploy_path: str = Field(default="", max_length=512)
+    deploy_paths: list[str] = Field(default_factory=list, max_length=10)
+
+    @property
+    def selected(self) -> list[str]:
+        """The chosen directories, normalized and de-duplicated in order."""
+        raw = self.deploy_paths or [self.deploy_path]
+        seen: list[str] = []
+        for path in raw:
+            cleaned = path.strip().strip("/")
+            if cleaned not in seen:
+                seen.append(cleaned)
+        return seen
 
 
 class RepositoryOut(BaseModel):
@@ -73,6 +94,7 @@ class RepositoryOut(BaseModel):
     default_branch: str
     clone_url: str
     deploy_path: str | None = None
+    service_paths: list[str] | None = None
     detected_type: DetectedType | None = None
     detected_framework: str | None = None
     detection_meta: dict[str, Any] | None = None

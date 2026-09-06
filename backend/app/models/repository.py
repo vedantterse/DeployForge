@@ -78,6 +78,16 @@ class Repository(Base, UUIDMixin, TimestampMixin):
     # only the user knows which one they meant.
     deploy_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
+    # For a repository deployed as several services at once: the directories
+    # that run together, in order, e.g. ["frontend", "backend"].
+    #
+    # A frontend and a backend in one repository are not two unrelated apps —
+    # the frontend is useless without the backend it calls. Deploying them
+    # separately gives two URLs and no way for one to reach the other, so a
+    # multi-service target is one deployment holding several containers on one
+    # private network. NULL means an ordinary single-directory target.
+    service_paths: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
     # --- Detection results (null until the repo has been analyzed) ---
     detected_type: Mapped[DetectedType | None] = mapped_column(
         Enum(
@@ -105,8 +115,16 @@ class Repository(Base, UUIDMixin, TimestampMixin):
     )
 
     @property
+    def is_multi_service(self) -> bool:
+        """Whether this target runs several directories together."""
+        return bool(self.service_paths) and len(self.service_paths) > 1
+
+    @property
     def target_label(self) -> str:
         """Human label for what is deployed, e.g. "octocat/app (frontend/)"."""
+        if self.is_multi_service:
+            names = " + ".join(p or "root" for p in self.service_paths)
+            return f"{self.full_name} ({names})"
         if not self.deploy_path:
             return self.full_name
         return f"{self.full_name} ({self.deploy_path}/)"

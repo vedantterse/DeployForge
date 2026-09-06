@@ -48,6 +48,8 @@ export type GitHubRepo = {
   /** Which targets are taken. "" means the whole repository. */
   connected_paths: string[];
   deployment_id: string | null;
+  /** The latest deployment's real state, or null if it was never built. */
+  deployment_status: string | null;
 };
 
 export type ConnectedRepo = {
@@ -72,6 +74,8 @@ export type DetectionResult = {
   deployment_id: string;
   full_name: string;
   deploy_path: string | null;
+  /** Set when several directories were connected to run together. */
+  service_paths: string[] | null;
   type: DetectedType;
   framework: string | null;
   compose: boolean;
@@ -158,7 +162,40 @@ export type Candidate = {
   /** Already connected by this account — it cannot be deployed twice. */
   already_connected: boolean;
   deployment_id: string | null;
+  deployment_status: string | null;
 };
+
+/**
+ * What to call a connected target, and how it should read.
+ *
+ * "Deployed" on a repository whose build failed is a decoration, not a status.
+ * A student looking at a red dashboard and a green badge for the same project
+ * rightly stops believing either of them.
+ */
+export function connectedState(status: string | null): {
+  label: string;
+  tone: "ok" | "danger" | "info" | "warn" | "neutral";
+} {
+  switch (status) {
+    case "running":
+    case "live":
+      return { label: "Running", tone: "ok" };
+    case "failed":
+      return { label: "Build failed", tone: "danger" };
+    case "queued":
+    case "building":
+    case "pushing":
+    case "starting":
+      return { label: "Building", tone: "info" };
+    case "built":
+      return { label: "Built, not started", tone: "info" };
+    case "stopped":
+      return { label: "Stopped", tone: "warn" };
+    default:
+      // Connected, but no build has ever run against it.
+      return { label: "Connected", tone: "neutral" };
+  }
+}
 
 export type ScanResult = {
   full_name: string;
@@ -185,13 +222,24 @@ export function scanRepo(fullName: string): Promise<ScanResult> {
  * Connect the target the user picked. The scan token carries the signed scan
  * result, so this needs no second download.
  */
+/**
+ * Connect what the user picked.
+ *
+ * One path connects a single directory. Several connect them as one
+ * deployment whose containers share a private network — a frontend and the
+ * backend it calls are one app, not two.
+ */
 export function selectTarget(
   scanToken: string,
-  deployPath: string,
+  deployPaths: string[],
 ): Promise<DetectionResult> {
   return apiFetch<DetectionResult>("/repos/select", {
     method: "POST",
-    body: JSON.stringify({ scan_token: scanToken, deploy_path: deployPath }),
+    body: JSON.stringify({
+      scan_token: scanToken,
+      deploy_path: deployPaths[0] ?? "",
+      deploy_paths: deployPaths,
+    }),
   });
 }
 

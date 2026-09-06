@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 
 from app.api import (
     admin_routes,
+    app_routes,
     auth_routes,
     deployment_routes,
     environment_routes,
@@ -95,6 +96,7 @@ app.include_router(github_routes.router)
 app.include_router(repository_routes.router)
 app.include_router(environment_routes.router)
 app.include_router(deployment_routes.router)
+app.include_router(app_routes.router)
 app.include_router(admin_routes.router)
 app.include_router(internal_routes.router)
 

@@ -13,7 +13,6 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import EnvVarEditor from "@/components/EnvVarEditor";
 import LogPane from "@/components/LogPane";
 import RequireAuth from "@/components/RequireAuth";
 import StatusBadge from "@/components/StatusBadge";
@@ -155,14 +154,15 @@ function Detail() {
   async function remove() {
     if (
       !window.confirm(
-        "Delete this deployment? Its container is stopped and removed. The built image stays in the registry.",
+        "Delete this deployment from the app's history? Its container is stopped and removed. The app itself, and its other deployments, are untouched.",
       )
     ) {
       return;
     }
+    const app = deployment?.repository_id;
     await act("delete", async () => {
       await deleteDeployment(id);
-      router.push("/dashboard");
+      router.push(app ? `/apps/${app}` : "/dashboard");
     });
   }
 
@@ -184,12 +184,13 @@ function Detail() {
 
   return (
     <div className="space-y-8">
+      {/* Back to the app this build belongs to, not past it to the list. */}
       <Link
-        href="/dashboard"
+        href={`/apps/${deployment.repository_id}`}
         className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
       >
         <ArrowLeft className="h-4 w-4" />
-        Back to my apps
+        {deployment.target_label}
       </Link>
 
       {/* --- Header ------------------------------------------------------ */}
@@ -434,14 +435,7 @@ function Detail() {
       </section>
 
       {/* --- Configuration ----------------------------------------------- */}
-      <section>
-        <SectionTitle hint="Injected at build time and at run time. Values are encrypted at rest; restart the app for changes to take effect.">
-          Environment variables
-        </SectionTitle>
-        <Card className="p-5">
-          <EnvVarEditor repositoryId={deployment.repository_id} />
-        </Card>
-      </section>
+      {/* Environment variables belong to the app, and are edited there. */}
     </div>
   );
 }

@@ -35,7 +35,7 @@ router = APIRouter(prefix="/deployments", tags=["deployments"])
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
-def _deployment_out(
+def deployment_out(
     deployment: Deployment,
     repository: Repository,
     *,
@@ -89,7 +89,7 @@ async def list_my_deployments(
         .order_by(Deployment.created_at.desc(), Deployment.id.desc())
         .limit(limit)
     )
-    return [_deployment_out(d, r) for d, r in rows.all()]
+    return [deployment_out(d, r) for d, r in rows.all()]
 
 
 async def _owned_deployment(
@@ -114,7 +114,7 @@ async def get_deployment(
 ) -> DeploymentOut:
     """One deployment. Polled by the UI while a build is running."""
     deployment, repository = await _owned_deployment(db, deployment_id, current_user.id)
-    return _deployment_out(deployment, repository)
+    return deployment_out(deployment, repository)
 
 
 # A build log is a few hundred KB at most; only the tail is ever useful.
@@ -181,7 +181,7 @@ async def start_deployment(
         )
 
     await runtime_service.start(db, deployment, repository, current_user)
-    return _deployment_out(deployment, repository)
+    return deployment_out(deployment, repository)
 
 
 @router.post("/{deployment_id}/stop", response_model=DeploymentOut)
@@ -191,7 +191,7 @@ async def stop_deployment(
     """Stop the app and take it off the router. Idempotent."""
     deployment, repository = await _owned_deployment(db, deployment_id, current_user.id)
     await runtime_service.stop(db, deployment)
-    return _deployment_out(deployment, repository)
+    return deployment_out(deployment, repository)
 
 
 @router.post("/{deployment_id}/restart", response_model=DeploymentOut)
@@ -206,7 +206,7 @@ async def restart_deployment(
         )
 
     await runtime_service.restart(db, deployment, repository, current_user)
-    return _deployment_out(deployment, repository)
+    return deployment_out(deployment, repository)
 
 
 @router.delete("/{deployment_id}", status_code=status.HTTP_204_NO_CONTENT)

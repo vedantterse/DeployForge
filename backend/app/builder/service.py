@@ -33,7 +33,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.builder import pack
+from app.builder import diagnose, pack, stack
 from app.config import settings
 from app.core.crypto import decrypt_value
 from app.db import AsyncSessionLocal
@@ -232,6 +232,33 @@ async def _build(
             )
             return
 
+        # A repository selected as several directories is one deployment made
+        # of several containers, and each directory is built on its own terms.
+        if repository.is_multi_service:
+            succeeded, error = await _build_stack(
+                db, deployment, repository,
+                source=source, env=env, commit_sha=commit_sha, log_file=log_file,
+            )
+            if succeeded:
+                await _finish(db, deployment, status=DeploymentStatus.BUILT)
+                await record(
+                    db, deployment.id, "build",
+                    f"Stack ready: {', '.join(deployment.compose_services or [])}.",
+                    level=EventLevel.SUCCESS,
+                )
+            else:
+                explained = diagnose.explain(
+                    diagnose.read_tail(log_file),
+                    error or "The stack could not be built.",
+                )
+                await _finish(
+                    db, deployment, status=DeploymentStatus.FAILED, error=explained
+                )
+                await record(
+                    db, deployment.id, "build", explained, level=EventLevel.ERROR,
+                )
+            return
+
         # The directory being built is the authority on how to build it — not
         # the detection row, which may predate a commit that added a compose
         # file or a Dockerfile.
@@ -307,13 +334,16 @@ async def _build(
             )
 
     if not succeeded:
-        await _finish(
-            db, deployment, status=DeploymentStatus.FAILED,
-            error=error or "The build failed. See the build log.",
+        # The tool's own message is usually "exit status 1", which tells the
+        # student nothing. Read the log back and name the cause when it is one
+        # we recognize.
+        explained = diagnose.explain(
+            diagnose.read_tail(log_file),
+            error or "The build failed. See the build log.",
         )
+        await _finish(db, deployment, status=DeploymentStatus.FAILED, error=explained)
         await record(
-            db, deployment.id, "build",
-            error or "The build failed.", level=EventLevel.ERROR,
+            db, deployment.id, "build", explained, level=EventLevel.ERROR,
         )
         return
 
@@ -323,6 +353,120 @@ async def _build(
     await _push(db, deployment, image_ref, log_file)
 
     await _finish(db, deployment, status=DeploymentStatus.BUILT, image_ref=image_ref)
+
+
+
+async def _build_stack(
+    db: AsyncSession,
+    deployment: Deployment,
+    repository: Repository,
+    *,
+    source: Path,
+    env: dict[str, str],
+    commit_sha: str | None,
+    log_file: Path,
+) -> tuple[bool, str | None]:
+    """
+    Build every directory of a multi-service target, then wire them together.
+
+    Each directory is built the same way a single target would be — its own
+    Dockerfile if it has one, buildpacks if not — so a repository can mix a
+    containerised backend with a buildpack frontend. The images are then run
+    together by Compose on one private network, which is what lets the frontend
+    reach the backend at all.
+    """
+    project = compose.project_name(deployment.id)
+    images: dict[str, str] = {}
+
+    # A stack, whatever each service was individually built with: the runtime
+    # brings it up with Compose, and `start` branches on this.
+    deployment.build_method = BuildMethod.COMPOSE
+    await db.commit()
+
+    paths = list(repository.service_paths or [])
+    _append(
+        log_file,
+        f"\nBuilding {len(paths)} services: "
+        f"{', '.join(stack.service_name(p) for p in paths)}\n",
+    )
+
+    for path in paths:
+        name = stack.service_name(path)
+        try:
+            directory = resolve_path(source, path or ROOT_PATH)
+        except ValueError as exc:
+            return False, str(exc)
+        if not directory.is_dir():
+            return False, f"{path}/ no longer exists in the repository."
+
+        local_ref = pack.build_image_ref(
+            user_id=repository.user_id,
+            repository_name=repository.name,
+            deploy_path=path or None,
+            commit_sha=commit_sha,
+        )
+        image_ref = registry_ref(local_ref)
+
+        dockerfile = find_dockerfile(directory)
+        _append(
+            log_file,
+            f"\n=== {name} ({path or 'repository root'}) — "
+            f"{'Dockerfile' if dockerfile else 'buildpacks'} ===\n",
+        )
+        await record(
+            db, deployment.id, "build",
+            f"Building service {name} with "
+            f"{'its Dockerfile' if dockerfile else 'buildpacks'}.",
+        )
+
+        if dockerfile is not None:
+            ok, error = await _build_with_docker(
+                image_ref=image_ref, source=directory,
+                dockerfile=dockerfile, log_file=log_file,
+            )
+        else:
+            ok, error = await _build_with_buildpacks(
+                image_ref=image_ref, source=directory,
+                workdir=source.parent, env=env, log_file=log_file,
+            )
+        if not ok:
+            return False, f"Service {name} failed to build: {error}"
+
+        await _push(db, deployment, image_ref, log_file)
+        images[name] = image_ref
+
+    if not images:
+        return False, "No services were selected for this deployment."
+
+    # The stack file references the images just built, so `compose up` starts
+    # them rather than rebuilding from source it no longer has.
+    stack_dir = compose.stack_dir_for(deployment.id)
+    (stack_dir / "compose.yaml").write_text(
+        stack.compose_file(services=images, env=env), encoding="utf-8"
+    )
+
+    web = stack.choose_web_service(list(images))
+    deployment.compose_project = project
+    deployment.compose_services = list(images)
+    deployment.container_name = compose.container_name_for(project, web)
+    deployment.app_port = stack.DEFAULT_PORT
+    await db.commit()
+
+    wiring = stack.service_urls(list(images))
+    _append(
+        log_file,
+        f"\nStack prepared\n"
+        f"  project    {project}\n"
+        f"  services   {', '.join(images)}\n"
+        f"  public     {web}\n"
+        f"  wiring     {', '.join(f'{k}={v}' for k, v in wiring.items())}\n",
+    )
+    await record(
+        db, deployment.id, "build",
+        f"{web} will receive traffic. Each service can reach the others at "
+        + ", ".join(f"{k}" for k in wiring),
+    )
+    return True, None
 
 
 async def _prepare_compose(

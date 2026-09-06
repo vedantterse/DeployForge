@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import Date, cast, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deployment_routes import _deployment_out
+from app.api.deployment_routes import deployment_out
 from app.auth.dependencies import AdminUser
 from app.builder import pack
 from app.config import settings
@@ -65,7 +65,7 @@ async def list_all_deployments(
         .limit(limit)
     )
     return [
-        _deployment_out(d, r, user_email=email) for d, r, email in rows.all()
+        deployment_out(d, r, user_email=email) for d, r, email in rows.all()
     ]
 
 
@@ -107,7 +107,7 @@ async def platform_overview(_admin: AdminUser, db: DbSession) -> list[UserDeploy
     running_by_user: dict = {}
     for deployment, repository in rows:
         by_user.setdefault(deployment.user_id, []).append(
-            _deployment_out(deployment, repository, user_email=None)
+            deployment_out(deployment, repository, user_email=None)
         )
         if deployment.status.is_running:
             running_by_user[deployment.user_id] = (
@@ -203,7 +203,7 @@ async def suspend_deployment(
         db, deployment, actor="admin", suspend=True,
         reason=payload.reason if payload else None,
     )
-    return _deployment_out(deployment, repository, user_email=owner.email)
+    return deployment_out(deployment, repository, user_email=owner.email)
 
 
 @router.post("/deployments/{deployment_id}/resume", response_model=DeploymentOut)
@@ -221,7 +221,7 @@ async def resume_deployment(
     )
     if deployment.image_ref:
         await runtime_service.start(db, deployment, repository, owner, actor="admin")
-    return _deployment_out(deployment, repository, user_email=owner.email)
+    return deployment_out(deployment, repository, user_email=owner.email)
 
 
 @router.delete("/deployments/{deployment_id}", status_code=status.HTTP_204_NO_CONTENT)

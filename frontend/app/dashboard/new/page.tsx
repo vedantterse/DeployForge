@@ -38,6 +38,7 @@ import {
   SearchIcon,
 } from "@/components/Icons";
 import {
+  connectedState,
   describeCandidate,
   frameworkName,
   getAuthorizeUrl,
@@ -48,7 +49,6 @@ import {
   selectTarget,
   type Candidate,
   type ConnectionStatus,
-  type DetectionResult,
   type GitHubRepo,
   type ScanResult,
 } from "@/lib/github";
@@ -80,7 +80,9 @@ function Wizard() {
 
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [scanning, setScanning] = useState<string | null>(null);
-  const [selected, setSelected] = useState<DetectionResult | null>(null);
+  // Which directories are ticked. Local until "Build and deploy" is pressed,
+  // so browsing the options no longer writes anything to the database.
+  const [picked, setPicked] = useState<string[]>([]);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
 
@@ -153,7 +155,7 @@ function Wizard() {
     setScanning(repo.full_name);
     setError("");
     setScan(null);
-    setSelected(null);
+    setPicked([]);
     try {
       setScan(await scanRepo(repo.full_name));
     } catch (err) {
@@ -163,25 +165,22 @@ function Wizard() {
     }
   }
 
-  async function pickTarget(candidate: Candidate) {
-    if (!scan) return;
-    setWorking(true);
+  function toggle(candidate: Candidate) {
     setError("");
-    try {
-      setSelected(await selectTarget(scan.scan_token, candidate.path));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not select that target.");
-    } finally {
-      setWorking(false);
-    }
+    setPicked((current) =>
+      current.includes(candidate.path)
+        ? current.filter((p) => p !== candidate.path)
+        : [...current, candidate.path],
+    );
   }
 
   async function build() {
-    if (!selected) return;
+    if (!scan || picked.length === 0) return;
     setWorking(true);
     setError("");
     try {
-      const { deployment_id } = await buildRepository(selected.repository_id);
+      const target = await selectTarget(scan.scan_token, picked);
+      const { deployment_id } = await buildRepository(target.repository_id);
       // The build runs in the background; its own page shows the log.
       router.push(`/deployments/${deployment_id}`);
     } catch (err) {
@@ -191,6 +190,16 @@ function Wizard() {
   }
 
   const step: Step = !connection?.connected ? 1 : !scan ? 2 : 3;
+
+  // Which ticked directory receives public traffic. Mirrors the backend's
+  // choice so the wizard promises what the platform will actually do.
+  const WEB_NAMES = ["frontend", "web", "client", "ui", "www", "site", "app", "dashboard"];
+  const webService =
+    picked.find((p) => WEB_NAMES.includes(p.toLowerCase())) ?? picked[0] ?? "";
+  const chosen =
+    picked.length === 1
+      ? scan?.candidates.find((c) => c.path === picked[0])
+      : undefined;
 
   const filtered = useMemo(() => {
     if (!repos) return null;
@@ -301,6 +310,7 @@ function Wizard() {
               <div className="max-h-96 space-y-2 overflow-auto pr-1">
                 {filtered?.map((repo) => {
                   const deployed = repo.connected;
+                  const state = connectedState(repo.deployment_status);
                   const recency = repoRecency(repo);
                   return (
                     <div
@@ -326,10 +336,7 @@ function Wizard() {
                           {repo.private && <Badge>Private</Badge>}
                           {repo.fork && <Badge>Fork</Badge>}
                           {deployed && (
-                            <Badge tone="ok">
-                              <CheckIcon className="h-3 w-3" />
-                              Deployed
-                            </Badge>
+                            <Badge tone={state.tone}>{state.label}</Badge>
                           )}
                         </span>
                         <span className="mt-0.5 flex items-center gap-2 text-xs text-[var(--text-dim)]">
@@ -384,22 +391,29 @@ function Wizard() {
         <StepCard
           number={3}
           title="Choose what to deploy"
-          done={!!selected}
+          done={picked.length > 0}
           description={
             scan.candidates.length > 1
-              ? "This repository has more than one deployable directory. Only you know which one you meant."
+              ? "Tick one directory, or several to run them together on a shared network."
               : "What was found in this repository."
           }
         >
           <div className="space-y-3">
             {scan.candidates.map((candidate) => {
-              const active = selected?.deploy_path === (candidate.path || null);
+              const active = picked.includes(candidate.path);
               const taken = candidate.already_connected;
-              const deployable = candidate.type !== "unknown" && !taken;
+              const takenState = connectedState(candidate.deployment_status);
+              // The root candidate contains the others, so it cannot be part
+              // of a combination — it would build the same code twice.
+              const isRoot = candidate.path === "";
+              const blockedByRoot =
+                picked.length > 0 && (isRoot ? !active : picked.includes(""));
+              const deployable =
+                candidate.type !== "unknown" && !taken && !blockedByRoot;
               return (
                 <button
                   key={candidate.path || "__root__"}
-                  onClick={() => deployable && pickTarget(candidate)}
+                  onClick={() => deployable && toggle(candidate)}
                   disabled={!deployable || working}
                   className={cx(
                     "flex w-full items-center justify-between gap-3 rounded-[var(--r-sm)] border px-4 py-3 text-left transition-colors",
@@ -412,6 +426,19 @@ function Wizard() {
                   )}
                 >
                   <span className="flex min-w-0 items-center gap-3">
+                    {/* A tick box, because more than one may be chosen. */}
+                    <span
+                      aria-hidden
+                      className={cx(
+                        "flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[6px] border",
+                        "transition-colors duration-[var(--t-hover)]",
+                        active
+                          ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--bg-deep)]"
+                          : "border-[var(--hairline-strong)]",
+                      )}
+                    >
+                      {active && <CheckIcon className="h-3 w-3" />}
+                    </span>
                     <span className="text-[var(--text-dim)]">
                       {candidate.type === "docker" ? (
                         <DockerIcon className="h-5 w-5" />
@@ -427,8 +454,12 @@ function Wizard() {
                       </span>
                       <span className="text-xs text-[var(--text-dim)]">
                         {taken
-                          ? "Already deployed — a target can only be connected once"
-                          : describeCandidate(candidate)}
+                          ? `Already connected — ${takenState.label.toLowerCase()}. Manage it from My apps.`
+                          : blockedByRoot
+                            ? isRoot
+                              ? "Cannot be combined with a directory inside it"
+                              : "Cannot be combined with the whole repository"
+                            : describeCandidate(candidate)}
                         {!taken &&
                           candidate.evidence.length > 0 &&
                           ` · ${candidate.evidence.slice(0, 3).join(", ")}`}
@@ -436,14 +467,10 @@ function Wizard() {
                     </span>
                   </span>
                   {taken ? (
-                    <Badge tone="ok">
-                      <CheckIcon className="h-3 w-3" />
-                      Deployed
-                    </Badge>
-                  ) : active ? (
+                    <Badge tone={takenState.tone}>{takenState.label}</Badge>
+                  ) : active && picked.length > 1 ? (
                     <Badge tone="accent">
-                      <CheckIcon className="h-3 w-3" />
-                      Selected
+                      {candidate.path === webService ? "Public" : "Internal"}
                     </Badge>
                   ) : null}
                 </button>
@@ -451,24 +478,42 @@ function Wizard() {
             })}
           </div>
 
-          {selected && (
+          {picked.length > 0 && (
             <div className="mt-5 rounded-[var(--r-sm)] border border-[var(--hairline-strong)] bg-[var(--surface-2)] p-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
+                <div className="min-w-0">
                   <p className="text-sm font-medium">
-                    {selected.type === "docker"
-                      ? "Will be built from your Dockerfile"
-                      : `Will be built with buildpacks as a ${frameworkName(selected.framework)} app`}
+                    {picked.length > 1
+                      ? `${picked.length} services will run together on a private network`
+                      : chosen?.type === "docker"
+                        ? "Will be built from your Dockerfile"
+                        : `Will be built with buildpacks as a ${frameworkName(chosen?.framework ?? null)} app`}
                   </p>
-                  {selected.commit_sha && (
-                    <Mono className="mt-1 block">
-                      commit {selected.commit_sha.slice(0, 7)} ·{" "}
-                      {selected.file_count} files
-                    </Mono>
+                  {picked.length > 1 ? (
+                    <p className="mt-1.5 text-xs text-[var(--text-dim)]">
+                      <span className="text-[var(--accent)]">{webService || "root"}</span>{" "}
+                      gets the public URL. Each service reaches the others by
+                      name — {picked
+                        .filter((p) => p !== webService)
+                        .map((p) => `${(p || "app").toUpperCase()}_URL`)
+                        .join(", ")}{" "}
+                      {picked.length === 2 ? "is" : "are"} set automatically.
+                    </p>
+                  ) : (
+                    scan.commit_sha && (
+                      <Mono className="mt-1 block">
+                        commit {scan.commit_sha.slice(0, 7)} · {scan.file_count} files
+                      </Mono>
+                    )
                   )}
                 </div>
-                <Button variant="primary" loading={working} onClick={build}>
-                  <RocketIcon className="h-4 w-4" />
+                <Button
+                  variant="primary"
+                  size="lg"
+                  loading={working}
+                  onClick={build}
+                  trailing={<RocketIcon className="h-3.5 w-3.5" />}
+                >
                   Build and deploy
                 </Button>
               </div>

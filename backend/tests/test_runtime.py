@@ -23,13 +23,14 @@ from app.runtime import naming, ports
 from app.runtime import service as runtime
 
 DEPLOYMENT_ID = uuid.UUID("4ac9b729-f76e-4a11-9e77-0000000000ff")
+REPOSITORY_ID = uuid.UUID("4ac9b729-f76e-4a11-9e77-0000000000ff")
 
 
 # --- Naming -----------------------------------------------------------------
 
 def test_subdomain_combines_repo_path_and_a_unique_suffix():
     name = naming.subdomain_for(
-        deployment_id=DEPLOYMENT_ID, repository_name="Todo App",
+        repository_id=REPOSITORY_ID, repository_name="Todo App",
         deploy_path="frontend",
     )
     assert name == "todo-app-frontend-4ac9b7"
@@ -37,21 +38,37 @@ def test_subdomain_combines_repo_path_and_a_unique_suffix():
 
 def test_subdomain_omits_the_path_for_a_root_target():
     name = naming.subdomain_for(
-        deployment_id=DEPLOYMENT_ID, repository_name="todo", deploy_path=None
+        repository_id=REPOSITORY_ID, repository_name="todo", deploy_path=None
     )
     assert name == "todo-4ac9b7"
 
 
-def test_two_deployments_of_the_same_repo_get_different_subdomains():
+def test_two_students_deploying_the_same_repo_get_different_subdomains():
     """Two students both deploying "todo" must each get a working URL."""
-    a = naming.subdomain_for(deployment_id=uuid.uuid4(), repository_name="todo")
-    b = naming.subdomain_for(deployment_id=uuid.uuid4(), repository_name="todo")
+    a = naming.subdomain_for(repository_id=uuid.uuid4(), repository_name="todo")
+    b = naming.subdomain_for(repository_id=uuid.uuid4(), repository_name="todo")
     assert a != b
+
+
+def test_every_build_of_one_app_answers_on_the_same_host():
+    """
+    The URL is the app's, not the build's.
+
+    A student shares their link; redeploying must not silently move the app
+    somewhere else.
+    """
+    first = naming.subdomain_for(
+        repository_id=REPOSITORY_ID, repository_name="todo"
+    )
+    later = naming.subdomain_for(
+        repository_id=REPOSITORY_ID, repository_name="todo"
+    )
+    assert first == later
 
 
 def test_subdomain_is_a_valid_dns_label():
     name = naming.subdomain_for(
-        deployment_id=DEPLOYMENT_ID, repository_name="My_Weird/Repo!!",
+        repository_id=REPOSITORY_ID, repository_name="My_Weird/Repo!!",
     )
     assert name.replace("-", "").isalnum()
     assert name.islower()
@@ -60,7 +77,7 @@ def test_subdomain_is_a_valid_dns_label():
 
 
 def test_a_repo_name_with_nothing_usable_still_produces_a_label():
-    name = naming.subdomain_for(deployment_id=DEPLOYMENT_ID, repository_name="!!!")
+    name = naming.subdomain_for(repository_id=REPOSITORY_ID, repository_name="!!!")
     assert name.startswith("app-")
 
 
@@ -103,9 +120,12 @@ def test_an_out_of_range_port_is_rejected():
 
 # --- Routing configuration --------------------------------------------------
 
-async def _running_deployment(db, user_id) -> tuple[Deployment, Repository]:
+async def _running_deployment(
+    db, user_id, *, github_repo_id: int = 4242, subdomain: str = "todo-abc123"
+) -> tuple[Deployment, Repository]:
+    """A running app. `subdomain` differs per app: two may not share one."""
     repository = Repository(
-        user_id=user_id, github_repo_id=4242, name="todo",
+        user_id=user_id, github_repo_id=github_repo_id, name="todo",
         full_name="octocat/todo", default_branch="main",
         clone_url="https://github.com/octocat/todo.git",
         detected_type=DetectedType.DOCKER,
@@ -118,7 +138,7 @@ async def _running_deployment(db, user_id) -> tuple[Deployment, Repository]:
         repository_id=repository.id, user_id=user_id,
         build_method=BuildMethod.DOCKER, status=DeploymentStatus.RUNNING,
         image_ref="localhost:5000/deployforge/x-todo:abc1234",
-        subdomain="todo-abc123", container_name="df-abc123", app_port=3000,
+        subdomain=subdomain, container_name=f"df-{subdomain}", app_port=3000,
     )
     db.add(deployment)
     await db.commit()
@@ -142,7 +162,7 @@ async def test_the_router_is_told_about_running_apps(client, db_session, user_cr
     server = config["services"]["todo-abc123"]["loadBalancer"]["servers"][0]
     # Routed by container name over the shared network, not by IP: a restarted
     # container keeps its name but not its address.
-    assert server["url"] == "http://df-abc123:3000"
+    assert server["url"] == "http://df-todo-abc123:3000"
 
 
 @pytest.mark.asyncio
@@ -269,6 +289,149 @@ async def test_an_admin_suspension_is_recorded_as_such(
         await runtime.start(db_session, deployment, repository, user)
 
 
+def _docker_that_starts_cleanly(monkeypatch):
+    """
+    Stub Docker so `start()` can run end to end.
+
+    Everything it touches is replaced with the successful answer, so the test
+    is about what the platform decides rather than what Docker does.
+    """
+    from types import SimpleNamespace
+
+    async def ok(*args, **kwargs):
+        return None
+
+    async def daemon_available(*args, **kwargs):
+        return True
+
+    async def exposed(*args, **kwargs):
+        return [3000]
+
+    async def run_container(*args, **kwargs):
+        return SimpleNamespace(ok=True, stdout="deadbeef", message="")
+
+    async def container_state(*args, **kwargs):
+        return {"Running": True, "ExitCode": 0}
+
+    monkeypatch.setattr(runtime.docker, "daemon_available", daemon_available)
+    monkeypatch.setattr(runtime.docker, "ensure_network", ok)
+    monkeypatch.setattr(runtime.docker, "image_exposed_ports", exposed)
+    monkeypatch.setattr(runtime.docker, "run_container", run_container)
+    monkeypatch.setattr(runtime.docker, "container_state", container_state)
+    monkeypatch.setattr(runtime.docker, "stop_container", ok)
+    monkeypatch.setattr(runtime.docker, "remove_container", ok)
+    # The boot grace period is real time; nothing here needs to wait it out.
+    monkeypatch.setattr(runtime.settings, "app_start_grace_seconds", 0)
+
+
+@pytest.mark.asyncio
+async def test_a_new_deployment_retires_the_one_it_replaces(
+    client, db_session, user_credentials, monkeypatch
+):
+    """
+    An app is one thing with one URL.
+
+    Without this, redeploying leaves the old container running and two of them
+    claim the same hostname.
+    """
+    _docker_that_starts_cleanly(monkeypatch)
+    res = await client.post("/auth/signup", json=user_credentials)
+    user_id = uuid.UUID(res.json()["user"]["id"])
+    old, repository = await _running_deployment(db_session, user_id)
+
+    new = Deployment(
+        repository_id=repository.id, user_id=user_id,
+        build_method=BuildMethod.DOCKER, status=DeploymentStatus.BUILT,
+        image_ref="localhost:5000/deployforge/x-todo:def5678",
+    )
+    db_session.add(new)
+    await db_session.commit()
+
+    user = await db_session.get(User, user_id)
+    await runtime.start(db_session, new, repository, user)
+
+    await db_session.refresh(old)
+    assert new.status is DeploymentStatus.RUNNING
+    assert old.status is DeploymentStatus.STOPPED, "the old container is still up"
+    assert old.runtime_stopped_at is not None
+
+
+@pytest.mark.asyncio
+async def test_redeploying_keeps_the_url_the_student_shared(
+    client, db_session, user_credentials, monkeypatch
+):
+    """The URL belongs to the app, so a new build answers at the same address."""
+    _docker_that_starts_cleanly(monkeypatch)
+    res = await client.post("/auth/signup", json=user_credentials)
+    user_id = uuid.UUID(res.json()["user"]["id"])
+    old, repository = await _running_deployment(db_session, user_id)
+
+    user = await db_session.get(User, user_id)
+    await runtime.start(db_session, old, repository, user)
+    first_url = old.subdomain
+
+    new = Deployment(
+        repository_id=repository.id, user_id=user_id,
+        build_method=BuildMethod.DOCKER, status=DeploymentStatus.BUILT,
+        image_ref="localhost:5000/deployforge/x-todo:def5678",
+    )
+    db_session.add(new)
+    await db_session.commit()
+    await runtime.start(db_session, new, repository, user)
+
+    assert new.subdomain == first_url
+
+
+@pytest.mark.asyncio
+async def test_a_redeploy_is_not_refused_by_the_app_s_own_quota_slot(
+    client, db_session, user_credentials, monkeypatch
+):
+    """
+    A redeploy briefly runs beside the deployment it replaces. Counting both
+    would refuse a student the slot their app already occupies.
+    """
+    _docker_that_starts_cleanly(monkeypatch)
+    res = await client.post("/auth/signup", json=user_credentials)
+    user_id = uuid.UUID(res.json()["user"]["id"])
+    old, repository = await _running_deployment(db_session, user_id)
+
+    user = await db_session.get(User, user_id)
+    user.max_deployments = 1
+    await db_session.commit()
+
+    new = Deployment(
+        repository_id=repository.id, user_id=user_id,
+        build_method=BuildMethod.DOCKER, status=DeploymentStatus.BUILT,
+        image_ref="localhost:5000/deployforge/x-todo:def5678",
+    )
+    db_session.add(new)
+    await db_session.commit()
+
+    await runtime.start(db_session, new, repository, user)
+    assert new.status is DeploymentStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_another_app_still_counts_against_the_quota(
+    client, db_session, user_credentials, monkeypatch
+):
+    """Excluding the app being started must not excuse the rest of them."""
+    _docker_that_starts_cleanly(monkeypatch)
+    res = await client.post("/auth/signup", json=user_credentials)
+    user_id = uuid.UUID(res.json()["user"]["id"])
+    await _running_deployment(db_session, user_id, github_repo_id=1111)
+    other, other_repo = await _running_deployment(
+        db_session, user_id, github_repo_id=2222, subdomain="other-def456"
+    )
+    other.status = DeploymentStatus.BUILT
+    user = await db_session.get(User, user_id)
+    user.max_deployments = 1
+    await db_session.commit()
+
+    with pytest.raises(runtime.QuotaExceededError):
+        await runtime.start(db_session, other, other_repo, user)
+
+
 @pytest.mark.asyncio
 async def test_starting_without_an_image_is_refused(
     client, db_session, user_credentials
@@ -388,3 +551,95 @@ async def test_timestamps_are_readable_after_an_update(
 def test_server_generated_values_are_fetched_eagerly():
     """The mapper setting the test above depends on."""
     assert Deployment.__mapper__.eager_defaults is True
+
+
+# --- Builds interrupted by a restart -----------------------------------------
+# A build runs as a background task owning a `docker build` or `pack` child.
+# Both die with the server. Without this sweep the row says `building` forever,
+# and because the UI refuses a second build while one is in flight, the
+# deployment can never be built again — a dead end with no way out.
+
+@pytest.mark.asyncio
+async def test_a_build_interrupted_by_a_restart_is_released(
+    client, db_session, user_credentials
+):
+    res = await client.post("/auth/signup", json=user_credentials)
+    user_id = uuid.UUID(res.json()["user"]["id"])
+    deployment, _ = await _running_deployment(db_session, user_id)
+
+    deployment.status = DeploymentStatus.BUILDING
+    await db_session.commit()
+
+    await runtime.release_interrupted_builds(db_session)
+
+    await db_session.refresh(deployment)
+    assert deployment.status is DeploymentStatus.FAILED
+    # The message has to say it was not the student's fault, and what to do.
+    assert "interrupted" in deployment.error_message.lower()
+    assert "rebuild" in deployment.error_message.lower()
+
+
+@pytest.mark.asyncio
+async def test_every_in_flight_build_status_is_released(
+    client, db_session, user_credentials
+):
+    """Queued, building and pushing all die with the process that owned them."""
+    res = await client.post("/auth/signup", json=user_credentials)
+    user_id = uuid.UUID(res.json()["user"]["id"])
+
+    stuck = []
+    for i, status in enumerate(
+        [DeploymentStatus.QUEUED, DeploymentStatus.BUILDING, DeploymentStatus.PUSHING]
+    ):
+        deployment, _ = await _running_deployment(
+            db_session, user_id, github_repo_id=6000 + i
+        )
+        deployment.status = status
+        deployment.subdomain = f"stuck-{i}"
+        await db_session.commit()
+        stuck.append(deployment)
+
+    await runtime.release_interrupted_builds(db_session)
+
+    for deployment in stuck:
+        await db_session.refresh(deployment)
+        assert deployment.status is DeploymentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_a_finished_deployment_is_left_alone(
+    client, db_session, user_credentials
+):
+    res = await client.post("/auth/signup", json=user_credentials)
+    user_id = uuid.UUID(res.json()["user"]["id"])
+    deployment, _ = await _running_deployment(db_session, user_id)  # running
+
+    await runtime.release_interrupted_builds(db_session)
+
+    await db_session.refresh(deployment)
+    assert deployment.status is DeploymentStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_reconcile_releases_builds_even_when_docker_is_unreachable(
+    client, db_session, user_credentials, monkeypatch
+):
+    """
+    A dead build is dead whatever Docker says, and the student needs the row
+    freed so they can try again.
+    """
+    res = await client.post("/auth/signup", json=user_credentials)
+    user_id = uuid.UUID(res.json()["user"]["id"])
+    deployment, _ = await _running_deployment(db_session, user_id)
+    deployment.status = DeploymentStatus.BUILDING
+    await db_session.commit()
+
+    async def unavailable() -> bool:
+        return False
+
+    monkeypatch.setattr(runtime.docker, "daemon_available", unavailable)
+
+    await runtime.reconcile(db_session)
+
+    await db_session.refresh(deployment)
+    assert deployment.status is DeploymentStatus.FAILED

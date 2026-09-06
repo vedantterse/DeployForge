@@ -1,10 +1,14 @@
 /**
- * One app, as it appears in a list.
+ * One app, as it appears in the list.
  *
  * The card answers, in order: what is it, is it up, where can I open it, and
  * what can I do to it. The live URL is the most valuable thing on the card
  * when an app is running, so it carries the most weight there — and is absent
  * entirely when it would 404.
+ *
+ * The buttons act on the app's *current* deployment, because that is what is
+ * running; the card never mentions which one that is. A student who wants the
+ * history opens the app.
  *
  * Only the name navigates. The card is not a giant link, because it also holds
  * buttons and an external URL, and nesting those inside a link makes every
@@ -16,7 +20,6 @@
 import Link from "next/link";
 import { useState } from "react";
 
-import StatusBadge from "@/components/StatusBadge";
 import { Badge, Button, Card, Mono, cx, relativeTime } from "@/components/ui";
 import {
   BoxIcon,
@@ -28,6 +31,7 @@ import {
   RestartIcon,
   StopIcon,
 } from "@/components/Icons";
+import { appState, type App } from "@/lib/apps";
 import {
   canStart,
   isBusy,
@@ -39,26 +43,26 @@ import {
   type Deployment,
 } from "@/lib/deployments";
 
-export default function DeploymentCard({
-  deployment,
+export default function AppCard({
+  app,
   onChange,
   onError,
-  showOwner = false,
   index = 0,
 }: {
-  deployment: Deployment;
-  onChange: (next: Deployment) => void;
+  app: App;
+  onChange: (deployment: Deployment) => void;
   onError: (message: string) => void;
-  showOwner?: boolean;
   index?: number;
 }) {
   const [pending, setPending] = useState<string | null>(null);
+  const current = app.current;
 
   async function act(name: string, fn: (id: string) => Promise<Deployment>) {
+    if (!current) return;
     setPending(name);
     onError("");
     try {
-      onChange(await fn(deployment.id));
+      onChange(await fn(current.id));
     } catch (err) {
       onError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -66,11 +70,11 @@ export default function DeploymentCard({
     }
   }
 
-  const running = isRunning(deployment.status);
-  const busy = isBusy(deployment.status) || pending !== null;
-  const isDocker = deployment.build_method === "docker";
-  const isCompose = deployment.build_method === "compose";
-  const method = methodMeta(deployment);
+  const state = appState(app);
+  const running = !!current && isRunning(current.status);
+  const busy = (!!current && isBusy(current.status)) || pending !== null;
+  const method = current ? methodMeta(current) : null;
+  const href = `/apps/${app.id}`;
 
   return (
     <Card
@@ -85,50 +89,55 @@ export default function DeploymentCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2.5">
             <Link
-              href={`/deployments/${deployment.id}`}
+              href={href}
               className="truncate font-semibold underline-offset-[5px] decoration-[var(--accent-line)] transition-colors duration-[var(--t-hover)] hover:text-[var(--accent)] hover:underline"
-              title="Open this deployment"
+              title="Open this app"
             >
-              {deployment.target_label}
+              {app.target_label}
             </Link>
-            <StatusBadge status={deployment.status} />
-            {deployment.suspended_by_admin && (
-              <Badge tone="danger">Suspended</Badge>
-            )}
+            <Badge tone={state.tone}>{state.label}</Badge>
+            {current?.suspended_by_admin && <Badge tone="danger">Suspended</Badge>}
           </div>
 
           <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[var(--text-dim)]">
-            {showOwner && deployment.user_email && (
-              <span className="text-[var(--text-muted)]">{deployment.user_email}</span>
+            {method && (
+              <span className="inline-flex items-center gap-1.5">
+                {current?.build_method === "compose" ? (
+                  <LayersIcon className="h-3.5 w-3.5" />
+                ) : current?.build_method === "docker" ? (
+                  <DockerIcon className="h-3.5 w-3.5" />
+                ) : (
+                  <BoxIcon className="h-3.5 w-3.5" />
+                )}
+                {method.label}
+              </span>
             )}
-            <span className="inline-flex items-center gap-1.5">
-              {isCompose ? (
-                <LayersIcon className="h-3.5 w-3.5" />
-              ) : isDocker ? (
-                <DockerIcon className="h-3.5 w-3.5" />
-              ) : (
-                <BoxIcon className="h-3.5 w-3.5" />
-              )}
-              {method.label}
-            </span>
-            {isCompose && deployment.compose_services && (
-              <span>{deployment.compose_services.length} services</span>
+            {app.is_multi_service && app.service_paths && (
+              <span>{app.service_paths.length} services</span>
             )}
-            {!isCompose && deployment.detected_framework && (
-              <span className="capitalize">{deployment.detected_framework}</span>
+            {!app.is_multi_service && app.detected_framework && (
+              <span className="capitalize">{app.detected_framework}</span>
             )}
-            {deployment.commit_sha && (
-              <Mono title={deployment.commit_sha}>
-                {deployment.commit_sha.slice(0, 7)}
+            {current?.commit_sha && (
+              <Mono title={current.commit_sha}>
+                {current.commit_sha.slice(0, 7)}
               </Mono>
             )}
-            <span>Updated {relativeTime(deployment.updated_at)}</span>
+            {/* The count is the point of the app view: many builds, one app. */}
+            <span>
+              {app.deployment_count === 0
+                ? "Never deployed"
+                : `${app.deployment_count} deployment${app.deployment_count === 1 ? "" : "s"}`}
+            </span>
+            {app.last_deployed_at && (
+              <span>Deployed {relativeTime(app.last_deployed_at)}</span>
+            )}
           </div>
 
           {/* The URL appears only while it actually resolves. */}
-          {running && deployment.url && (
+          {running && current?.url && (
             <a
-              href={deployment.url}
+              href={current.url}
               target="_blank"
               rel="noreferrer"
               className={cx(
@@ -137,20 +146,20 @@ export default function DeploymentCard({
                 "transition-colors duration-[var(--t-hover)] ease-[var(--ease-out)] hover:bg-[var(--ok)] hover:text-[var(--bg-deep)]",
               )}
             >
-              {deployment.url.replace(/^https?:\/\//, "")}
+              {current.url.replace(/^https?:\/\//, "")}
               <ExternalIcon className="h-3 w-3 opacity-60 transition-opacity group-hover/url:opacity-100" />
             </a>
           )}
 
-          {deployment.status === "failed" && deployment.error_message && (
+          {current?.status === "failed" && current.error_message && (
             <p className="mt-3.5 line-clamp-2 rounded-[var(--r-sm)] border border-[var(--danger)]/20 bg-[var(--danger-soft)] px-3.5 py-2.5 text-xs leading-relaxed text-[var(--danger)]">
-              {deployment.error_message}
+              {current.error_message}
             </p>
           )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          {canStart(deployment) && (
+          {current && canStart(current) && (
             <Button
               size="sm"
               variant="primary"
@@ -186,8 +195,8 @@ export default function DeploymentCard({
             </>
           )}
           <Link
-            href={`/deployments/${deployment.id}`}
-            aria-label={`Open ${deployment.target_label}`}
+            href={href}
+            aria-label={`Open ${app.target_label}`}
             className={cx(
               "group/go flex h-9 w-9 items-center justify-center rounded-full border border-[var(--hairline)]",
               "text-[var(--text-dim)] transition-[color,background-color,transform] duration-[var(--t-hover)] ease-[var(--ease-spring)]",

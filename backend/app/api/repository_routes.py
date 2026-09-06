@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentUser
 from app.builder import pack
+from app.builder import stack
 from app.builder.service import run_build
 from app.core.errors import PermissionError_, AppError, ConflictError, NotFoundError
 from app.db import get_db
@@ -94,6 +95,7 @@ def _candidate_out(
     *,
     already_connected: bool = False,
     deployment_id=None,
+    deployment_status=None,
 ) -> CandidateOut:
     result = candidate.result
     return CandidateOut(
@@ -107,6 +109,9 @@ def _candidate_out(
         reason=result.reason,
         already_connected=already_connected,
         deployment_id=deployment_id,
+        deployment_status=(
+            deployment_status.value if deployment_status is not None else None
+        ),
     )
 
 
@@ -178,6 +183,7 @@ def _detection_out(
         deployment_id=deployment.id,
         full_name=repository.full_name,
         deploy_path=repository.deploy_path,
+        service_paths=repository.service_paths,
         type=repository.detected_type,
         framework=result.framework,
         compose=result.compose,
@@ -235,20 +241,19 @@ async def scan_repository(
     # Targets this account has already connected from this repository. A
     # monorepo can have `frontend` taken and `backend` still free, so this is
     # per-target rather than per-repository.
-    taken = {
-        (deploy_path or ""): deployment_id
-        for deploy_path, deployment_id in (
-            await db.execute(
-                select(Repository.deploy_path, Deployment.id)
-                .outerjoin(Deployment, Deployment.repository_id == Repository.id)
-                .where(
-                    Repository.user_id == current_user.id,
-                    Repository.github_repo_id == metadata["github_repo_id"],
-                )
-                .order_by(Deployment.created_at.desc().nullslast())
+    taken: dict[str, tuple] = {}
+    for deploy_path, deployment_id, status in (
+        await db.execute(
+            select(Repository.deploy_path, Deployment.id, Deployment.status)
+            .outerjoin(Deployment, Deployment.repository_id == Repository.id)
+            .where(
+                Repository.user_id == current_user.id,
+                Repository.github_repo_id == metadata["github_repo_id"],
             )
-        ).all()
-    }
+            .order_by(Deployment.created_at.desc().nullslast())
+        )
+    ).all():
+        taken.setdefault((deploy_path or ""), (deployment_id, status))
 
     scan_token = create_scan_token(
         current_user.id,
@@ -271,7 +276,8 @@ async def scan_repository(
             _candidate_out(
                 c,
                 already_connected=c.path in taken,
-                deployment_id=taken.get(c.path),
+                deployment_id=(taken.get(c.path) or (None, None))[0],
+                deployment_status=(taken.get(c.path) or (None, None))[1],
             )
             for c in candidates
         ],
@@ -299,16 +305,34 @@ async def select_target(
     claims = read_scan_token(payload.scan_token, current_user.id)
     metadata = claims["metadata"]
 
-    deploy_path = payload.deploy_path.strip().strip("/")
-    chosen = next(
-        (c for c in claims["candidates"] if c["path"] == deploy_path), None
-    )
-    if chosen is None:
+    selected = payload.selected
+    if not selected:
+        raise UnknownTargetError("No target was chosen.")
+
+    by_path = {c["path"]: c for c in claims["candidates"]}
+    for path in selected:
+        if path not in by_path:
+            raise UnknownTargetError(
+                f"{_label_for(path)} was not one of the scanned targets."
+            )
+
+    multi = len(selected) > 1
+    if multi and any(path == ROOT_PATH for path in selected):
+        # The root candidate *contains* the others, so pairing them would build
+        # the same code twice and give two services the same code base.
         raise UnknownTargetError(
-            f"{_label_for(deploy_path)} was not one of the scanned targets."
+            "The whole repository cannot be combined with a directory inside "
+            "it. Choose either the whole repository, or the directories to run "
+            "together."
         )
 
-    stored_path = deploy_path or None  # NULL means the repository root
+    # A multi-service target is recorded against the repository root: it is the
+    # whole repository being deployed, as several containers.
+    deploy_path = selected[0]
+    stored_path = None if multi else (deploy_path or None)
+    # The candidate whose detection is shown; for a stack that is the service
+    # the user will actually open.
+    chosen = by_path[stack.choose_web_service(selected) if multi else deploy_path]
 
     existing = await db.execute(
         select(Repository).where(
@@ -332,6 +356,8 @@ async def select_target(
     repository.full_name = metadata["full_name"]
     repository.default_branch = metadata["default_branch"]
     repository.clone_url = metadata["clone_url"]
+    # NULL for a single directory, so an ordinary target stays ordinary.
+    repository.service_paths = selected if multi else None
 
     # Rebuild the detector's own result object from the signed scan, so the
     # same persistence path is used whether the result came from a scan or a
