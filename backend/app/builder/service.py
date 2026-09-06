@@ -513,10 +513,13 @@ async def _prepare_compose(
     # Done after the config above was resolved, so routing still sees which
     # service the author published — that is the best signal of which one
     # serves traffic, and it is worth reading before it is taken away.
-    unpublished = compose.strip_published_ports(stack_dir)
+    edits = compose.sanitize_stack(stack_dir)
 
     deployment.compose_project = project
     deployment.compose_services = services
+    deployment.compose_web_service = web_service
+    # A placeholder until the stack is up: what Docker really called the
+    # container is read back then, and that is what routing uses.
     deployment.container_name = compose.container_name_for(project, web_service)
     deployment.app_port = port or 80
     await db.commit()
@@ -529,10 +532,10 @@ async def _prepare_compose(
         f"  routed to  {web_service}:{deployment.app_port}\n"
         f"  workdir    {stack_dir}\n",
     )
-    if unpublished:
+    if edits.unpublished:
         listed = "; ".join(
             f"{name} ({', '.join(str(p) for p in ports)})"
-            for name, ports in unpublished.items()
+            for name, ports in edits.unpublished.items()
         )
         _append(
             log_file,
@@ -542,6 +545,19 @@ async def _prepare_compose(
             f"             reachable at its own URL. Publishing a port would "
             f"claim it on the\n"
             f"             machine every deployment shares.\n",
+        )
+    if edits.unnamed:
+        listed = "; ".join(
+            f"{service} (was {name})" for service, name in edits.unnamed.items()
+        )
+        _append(
+            log_file,
+            f"  note       fixed container names removed from {listed}.\n"
+            f"             A container name is global to the server, so two "
+            f"deployments using\n"
+            f"             the same one cannot both run. Compose names them "
+            f"per deployment\n"
+            f"             instead; nothing in your app needs to change.\n",
         )
     return True, None
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -184,16 +185,37 @@ def _exposed_port(service: dict) -> int | None:
     return None
 
 
-def strip_published_ports(stack_dir: Path) -> dict[str, list[int]]:
+@dataclass(frozen=True)
+class StackEdits:
+    """What had to be changed in a student's compose file, and for whom."""
+
+    #: service -> container ports that were published on the host
+    unpublished: dict[str, list[int]]
+    #: service -> the fixed `container_name:` that was removed
+    unnamed: dict[str, str]
+
+    def __bool__(self) -> bool:
+        return bool(self.unpublished or self.unnamed)
+
+
+def sanitize_stack(stack_dir: Path) -> StackEdits:
     """
-    Take host port bindings out of the stack's own compose files.
+    Take out the two things a compose file may claim that are not its to claim.
 
-    Every `ports:` entry becomes an `expose:` of the same container port. The
-    service stays reachable by name from inside the stack and from the router,
-    and stops competing for a port on the machine everyone shares.
+    `ports:` publishes on the host. Every Next.js compose file publishes 3000,
+    so the second student to deploy one would fail to start; a published 5432
+    would put their database on the shared machine. Each entry becomes an
+    `expose:` of the same container port, which keeps it reachable inside the
+    stack and to the router, and off the host.
 
-    Returns the container ports removed, per service, so the build log can say
-    what was changed rather than quietly rewriting someone's file.
+    `container_name:` is global to the Docker daemon. Two students deploying
+    the same repository would collide on it, and the second would be told the
+    name is already in use for reasons entirely outside their control. Removed,
+    so Compose falls back to naming the container after the project — which is
+    unique per deployment.
+
+    Returns what was changed, so the build log can say so rather than quietly
+    rewriting someone's file.
 
     Operates on the stack's working copy, never on anything the student can
     see, and leaves a file it cannot parse alone: Compose has already accepted
@@ -201,6 +223,7 @@ def strip_published_ports(stack_dir: Path) -> dict[str, list[int]]:
     breaking a working deployment over it would be the worse outcome.
     """
     removed: dict[str, list[int]] = {}
+    renamed: dict[str, str] = {}
 
     for name in (*COMPOSE_FILENAMES, *OVERRIDE_FILENAMES):
         path = stack_dir / name
@@ -220,44 +243,97 @@ def strip_published_ports(stack_dir: Path) -> dict[str, list[int]]:
 
         changed = False
         for service_name, service in services.items():
-            if not isinstance(service, dict) or not service.get("ports"):
+            if not isinstance(service, dict):
                 continue
 
-            targets = [
-                target
-                for target in (_target_port(p) for p in service["ports"])
-                if target is not None
-            ]
-            del service["ports"]
-            changed = True
+            if service.get("ports"):
+                targets = [
+                    target
+                    for target in (_target_port(p) for p in service["ports"])
+                    if target is not None
+                ]
+                del service["ports"]
+                changed = True
 
-            # Keep the port reachable inside the stack, just not on the host.
-            exposed = [str(v) for v in service.get("expose") or []]
-            for target in targets:
-                if str(target) not in exposed:
-                    exposed.append(str(target))
-            if exposed:
-                service["expose"] = exposed
+                # Keep the port reachable inside the stack, not on the host.
+                exposed = [str(v) for v in service.get("expose") or []]
+                for target in targets:
+                    if str(target) not in exposed:
+                        exposed.append(str(target))
+                if exposed:
+                    service["expose"] = exposed
 
-            removed.setdefault(service_name, []).extend(targets)
+                removed.setdefault(service_name, []).extend(targets)
+
+            if service.get("container_name"):
+                renamed[service_name] = str(service["container_name"])
+                del service["container_name"]
+                changed = True
 
         if changed:
             path.write_text(
                 yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
             )
 
-    return removed
+    return StackEdits(unpublished=removed, unnamed=renamed)
 
 
 def container_name_for(project: str, service: str) -> str:
     """
-    The container Compose creates for a service.
+    The name Compose will *probably* give a service's container.
 
-    Compose v2 names containers `<project>-<service>-<index>`; the first
-    replica is always index 1, and DeployForge never scales a service beyond
-    one, so this is exact rather than a guess.
+    Compose v2 names containers `<project>-<service>-<index>` and the first
+    replica is index 1, so this holds for the files DeployForge runs — it
+    removes any `container_name:` that would override it, and never scales a
+    service beyond one replica.
+
+    It is still a prediction. Use it before the stack exists; once it is up,
+    `container_names()` reports what Docker actually did, and that is what
+    gets stored.
     """
     return f"{project}-{service}-1"
+
+
+async def container_names(project: str) -> dict[str, str]:
+    """
+    What Docker actually named each service's container, service -> name.
+
+    Includes containers that have stopped: a stack that died on boot still has
+    to be found, and being unable to name it is how "no such container" ends up
+    reported to a student as their app crashing.
+    """
+    result = await _run(
+        "compose", "--project-name", project, "ps",
+        "--format", "json", "--all",
+        timeout=60,
+    )
+    if not result.ok:
+        return {}
+
+    found: dict[str, str] = {}
+
+    def take(entry) -> None:
+        if isinstance(entry, dict):
+            service, name = entry.get("Service"), entry.get("Name")
+            if service and name:
+                found.setdefault(str(service), str(name))
+
+    # `compose ps --format json` emits one JSON object per line, except where
+    # it emits a single array; both shapes are in the wild.
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, list):
+            for entry in parsed:
+                take(entry)
+        else:
+            take(parsed)
+    return found
 
 
 async def up(

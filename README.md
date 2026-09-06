@@ -98,14 +98,22 @@ runs on its own private network, and only its web service is additionally
 attached to the shared edge network — one student's database is unreachable
 from another student's app.
 
-**`ports:` is removed from a stack's compose file**, and the container port
-kept as `expose:`. Publishing a port means claiming it on the machine everyone
+**`ports:` and `container_name:` are removed from a stack's compose file.** The
+container port is kept as `expose:`. Publishing a port means claiming it on the machine everyone
 shares: every Next.js compose file publishes 3000, so the second student to
 deploy one gets `ports are not available`, and a published `5432` would put
 their database on the host — exactly what the isolation above exists to
 prevent. Nothing is lost: the router reaches a stack by container name over the
 shared network, and services still reach each other by service name. The build
 log says what was removed rather than rewriting a file silently.
+
+`container_name:` is global to the Docker daemon, so two students deploying the
+same repository would collide on it and the second would be told the name is
+already in use for reasons entirely outside their control. Removing it also
+makes the container's name predictable — but the name is read back from Docker
+after the stack is up rather than assumed, because a name that turns out to be
+wrong means the router points at a host that does not exist and a healthy app
+is reported as having died on boot.
 
 Administrators have three distinct levers, kept separate because they answer
 different problems:

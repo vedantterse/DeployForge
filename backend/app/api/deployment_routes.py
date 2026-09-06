@@ -63,6 +63,7 @@ def deployment_out(
         suspension_reason=deployment.suspension_reason,
         compose_project=deployment.compose_project,
         compose_services=deployment.compose_services,
+        compose_web_service=deployment.compose_web_service,
         repository_id=repository.id,
         full_name=repository.full_name,
         deploy_path=repository.deploy_path,

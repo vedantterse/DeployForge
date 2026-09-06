@@ -189,6 +189,12 @@ class Deployment(Base, UUIDMixin, TimestampMixin):
     # whole stack can be stopped, inspected and torn down as a unit.
     compose_project: Mapped[str | None] = mapped_column(String(128), nullable=True)
     compose_services: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Which of those services receives public traffic. Recorded rather than
+    # recovered from the container name: a compose file that sets its own
+    # `container_name:` leaves nothing in that name to recover it from.
+    compose_web_service: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
     target_server_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     logs_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

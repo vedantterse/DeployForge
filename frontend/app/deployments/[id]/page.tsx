@@ -368,7 +368,7 @@ function Detail() {
                 )}
               >
                 {service}
-                {deployment.container_name?.includes(`-${service}-`) && " · routed"}
+                {deployment.compose_web_service === service && " · routed"}
               </span>
             ))}
           </div>

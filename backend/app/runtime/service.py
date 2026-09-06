@@ -444,7 +444,23 @@ async def _start_compose(
             f"The stack failed to start: {result.message}. See the build log."
         )
 
-    container = deployment.container_name
+    # What Compose actually named the container, rather than what it was
+    # expected to. A predicted name that turns out to be wrong is not a
+    # cosmetic problem: the container is never attached to the edge network,
+    # the router is pointed at a host that does not exist, and the health
+    # check below reports a perfectly healthy app as having died on boot.
+    actual = await compose.container_names(project)
+    container = actual.get(deployment.compose_web_service or "") or (
+        deployment.container_name
+    )
+    if container != deployment.container_name:
+        logger.info(
+            "Compose named %s's container %s, not %s",
+            deployment.compose_web_service, container, deployment.container_name,
+        )
+        deployment.container_name = container
+        await db.commit()
+
     # Idempotent: already being on the network is not an error.
     await compose.attach_to_edge(container)
     return container

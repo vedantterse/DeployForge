@@ -46,6 +46,7 @@ class DeploymentOut(BaseModel):
     suspension_reason: str | None = None
     compose_project: str | None = None
     compose_services: list[str] | None = None
+    compose_web_service: str | None = None
 
     repository_id: uuid.UUID
     full_name: str

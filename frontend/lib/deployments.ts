@@ -49,6 +49,8 @@ export type Deployment = {
   suspension_reason: string | null;
   compose_project: string | null;
   compose_services: string[] | null;
+  /** Which service receives public traffic. Recorded, not inferred. */
+  compose_web_service: string | null;
 
   repository_id: string;
   full_name: string;

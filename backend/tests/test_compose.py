@@ -202,9 +202,9 @@ def test_a_published_port_becomes_an_exposed_one(tmp_path):
         """,
     )
 
-    removed = compose.strip_published_ports(stack)
+    edits = compose.sanitize_stack(stack)
 
-    assert removed == {"web": [3000]}
+    assert edits.unpublished == {"web": [3000]}
     written = yaml.safe_load((stack / "docker-compose.yml").read_text(encoding="utf-8"))
     assert "ports" not in written["services"]["web"]
     assert written["services"]["web"]["expose"] == ["3000"]
@@ -225,7 +225,7 @@ def test_the_long_port_form_is_handled(tmp_path):
         """,
     )
 
-    assert compose.strip_published_ports(stack) == {"api": [8080]}
+    assert compose.sanitize_stack(stack).unpublished == {"api": [8080]}
     written = yaml.safe_load((stack / "docker-compose.yml").read_text(encoding="utf-8"))
     assert written["services"]["api"]["expose"] == ["8080"]
 
@@ -248,7 +248,7 @@ def test_a_database_beside_the_app_is_unpublished_too(tmp_path):
         """,
     )
 
-    assert compose.strip_published_ports(stack) == {"web": [3000], "db": [5432]}
+    assert compose.sanitize_stack(stack).unpublished == {"web": [3000], "db": [5432]}
 
 
 def test_an_override_file_cannot_put_the_binding_back(tmp_path):
@@ -271,7 +271,7 @@ def test_an_override_file_cannot_put_the_binding_back(tmp_path):
         name="docker-compose.override.yml",
     )
 
-    assert compose.strip_published_ports(stack) == {"web": [3000]}
+    assert compose.sanitize_stack(stack).unpublished == {"web": [3000]}
     override = yaml.safe_load(
         (stack / "docker-compose.override.yml").read_text(encoding="utf-8")
     )
@@ -290,7 +290,7 @@ def test_an_existing_expose_is_kept(tmp_path):
         """,
     )
 
-    compose.strip_published_ports(stack)
+    compose.sanitize_stack(stack)
     written = yaml.safe_load((stack / "docker-compose.yml").read_text(encoding="utf-8"))
     assert written["services"]["web"]["expose"] == ["9229", "3000"]
 
@@ -305,7 +305,7 @@ def test_a_stack_without_bindings_is_left_untouched(tmp_path):
     stack = write_stack(tmp_path, original)
     before = (stack / "docker-compose.yml").read_text(encoding="utf-8")
 
-    assert compose.strip_published_ports(stack) == {}
+    assert not compose.sanitize_stack(stack)
     assert (stack / "docker-compose.yml").read_text(encoding="utf-8") == before
 
 
@@ -318,9 +318,110 @@ def test_an_unparseable_file_is_left_alone(tmp_path):
     stack = tmp_path
     (stack / "docker-compose.yml").write_text("services: [oh: no: :", encoding="utf-8")
 
-    assert compose.strip_published_ports(stack) == {}
+    assert not compose.sanitize_stack(stack)
     assert (stack / "docker-compose.yml").read_text(encoding="utf-8")
 
 
 def test_nothing_happens_without_a_compose_file(tmp_path):
-    assert compose.strip_published_ports(tmp_path) == {}
+    assert not compose.sanitize_stack(tmp_path)
+
+
+# --- Fixed container names ---------------------------------------------------
+#
+# The failure these came from: a compose file with `container_name: verde-store`
+# deployed to a container the platform then could not find, because it had
+# predicted `<project>-web-1`. It reported a running app as having died on boot.
+
+def test_a_fixed_container_name_is_removed(tmp_path):
+    stack = write_stack(
+        tmp_path,
+        """
+        services:
+          web:
+            image: verde-store:latest
+            container_name: verde-store
+        """,
+    )
+
+    edits = compose.sanitize_stack(stack)
+
+    assert edits.unnamed == {"web": "verde-store"}
+    written = yaml.safe_load((stack / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert "container_name" not in written["services"]["web"]
+
+
+def test_both_kinds_of_claim_are_removed_together(tmp_path):
+    stack = write_stack(
+        tmp_path,
+        """
+        services:
+          web:
+            image: web:latest
+            container_name: verde-store
+            ports: ["3000:3000"]
+        """,
+    )
+
+    edits = compose.sanitize_stack(stack)
+
+    assert edits.unpublished == {"web": [3000]}
+    assert edits.unnamed == {"web": "verde-store"}
+
+
+def test_the_predicted_name_holds_once_the_file_is_sanitized(tmp_path):
+    """
+    Compose names a container `<project>-<service>-<index>` when the file does
+    not name it, which is what the prediction assumes — and what stripping
+    `container_name:` guarantees.
+    """
+    assert compose.container_name_for("df-abc123", "web") == "df-abc123-web-1"
+
+
+def test_the_real_name_is_read_back_from_docker(monkeypatch):
+    """
+    Two shapes of `compose ps --format json` exist in the wild: one object per
+    line, and a single array. Both have to work.
+    """
+    import asyncio
+
+    from app.runtime.docker import CommandResult
+
+    lines = (
+        '{"Service":"web","Name":"verde-store","State":"running"}\n'
+        '{"Service":"db","Name":"df-abc-db-1","State":"running"}'
+    )
+
+    async def fake_run(*args, **kwargs):
+        return CommandResult(exit_code=0, stdout=lines, stderr="")
+
+    monkeypatch.setattr(compose, "_run", fake_run)
+    names = asyncio.run(compose.container_names("df-abc"))
+    assert names == {"web": "verde-store", "db": "df-abc-db-1"}
+
+
+def test_the_array_shape_is_read_too(monkeypatch):
+    import asyncio
+
+    from app.runtime.docker import CommandResult
+
+    async def fake_run(*args, **kwargs):
+        return CommandResult(
+            exit_code=0,
+            stdout='[{"Service":"web","Name":"verde-store"}]', stderr="",
+        )
+
+    monkeypatch.setattr(compose, "_run", fake_run)
+    assert asyncio.run(compose.container_names("df-abc")) == {"web": "verde-store"}
+
+
+def test_an_unreadable_listing_names_nothing(monkeypatch):
+    """Better to fall back to the prediction than to invent a name."""
+    import asyncio
+
+    from app.runtime.docker import CommandResult
+
+    async def fake_run(*args, **kwargs):
+        return CommandResult(exit_code=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(compose, "_run", fake_run)
+    assert asyncio.run(compose.container_names("df-abc")) == {}
