@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import RequireAuth from "@/components/RequireAuth";
 import {
   Alert,
+  Eyebrow,
   Badge,
   Button,
   Card,
@@ -103,7 +104,11 @@ function Infrastructure() {
   }, []);
 
   useEffect(() => {
-    load();
+    // The loader is async: every setState inside it runs after an await, not
+    // during this effect. The rule cannot see through the call, so it is
+    // silenced here rather than contorting the fetch to satisfy a heuristic.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
     const timer = setInterval(load, 30000);
     return () => clearInterval(timer);
   }, [load]);
@@ -114,7 +119,8 @@ function Infrastructure() {
     <div className="space-y-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Infrastructure</h1>
+          <Eyebrow>Services</Eyebrow>
+        <h1 className="mt-3 text-[2rem] font-semibold leading-tight">Infrastructure</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
             Checked live against the running services, not cached.
           </p>
@@ -168,7 +174,7 @@ function Infrastructure() {
                   <div className="flex items-start gap-3">
                     <span
                       className={cx(
-                        "flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-sm)]",
+                        "flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--r-sm)]",
                         up
                           ? "bg-[var(--ok-soft)] text-[var(--ok)]"
                           : "bg-[var(--warn-soft)] text-[var(--warn)]",
@@ -199,7 +205,7 @@ function Infrastructure() {
                         {service.breaks}
                       </p>
                       {!up && status.detail[service.key] && (
-                        <p className="mt-3 rounded-[var(--radius-sm)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--warn)]">
+                        <p className="mt-3 rounded-[var(--r-sm)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--warn)]">
                           {status.detail[service.key]}
                         </p>
                       )}

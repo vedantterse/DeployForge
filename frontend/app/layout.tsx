@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -7,14 +7,21 @@ const geistSans = Geist({
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+/**
+ * JetBrains Mono for every identifier the product shows: image refs, commit
+ * SHAs, container names, and the two log panes. A deployment platform is read
+ * as much as it is used, and those strings have to be unambiguous — a monospace
+ * face with distinct zero and one is not decoration here.
+ */
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-jetbrains-mono",
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
   title: "DeployForge",
-  description: "Connect a GitHub repository and let DeployForge figure out how to run it.",
+  description:
+    "Connect a GitHub repository. DeployForge works out how it should be built, builds it, and runs it behind its own URL.",
 };
 
 export default function RootLayout({
@@ -25,9 +32,13 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col">
+        {/* Film grain over everything, so large dark areas have a surface.
+            Fixed and inert — attached to a scrolling container it would
+            repaint on every frame. */}
+        <div className="grain" aria-hidden />
         {children}
       </body>
     </html>

@@ -3,8 +3,12 @@
  *
  * The card answers, in order: what is it, is it up, where can I open it, and
  * what can I do to it. The live URL is the most valuable thing on the card
- * when an app is running, so it gets the most visual weight there — and is
- * absent entirely when it would 404.
+ * when an app is running, so it carries the most weight there — and is absent
+ * entirely when it would 404.
+ *
+ * Only the name navigates. The card is not a giant link, because it also holds
+ * buttons and an external URL, and nesting those inside a link makes every
+ * click ambiguous.
  */
 
 "use client";
@@ -13,16 +17,16 @@ import Link from "next/link";
 import { useState } from "react";
 
 import StatusBadge from "@/components/StatusBadge";
-import { Button, Card, Mono, cx, relativeTime } from "@/components/ui";
+import { Badge, Button, Card, Mono, cx, relativeTime } from "@/components/ui";
 import {
-  DockerIcon,
   BoxIcon,
+  ChevronRight,
+  DockerIcon,
   ExternalIcon,
   LayersIcon,
   PlayIcon,
   RestartIcon,
   StopIcon,
-  ChevronRight,
 } from "@/components/Icons";
 import {
   canStart,
@@ -50,10 +54,7 @@ export default function DeploymentCard({
 }) {
   const [pending, setPending] = useState<string | null>(null);
 
-  async function act(
-    name: string,
-    fn: (id: string) => Promise<Deployment>,
-  ) {
+  async function act(name: string, fn: (id: string) => Promise<Deployment>) {
     setPending(name);
     onError("");
     try {
@@ -76,27 +77,27 @@ export default function DeploymentCard({
       interactive
       className="rise overflow-hidden"
       // Cards resolve in sequence rather than all at once.
-      {...({ style: { "--delay": `${Math.min(index, 8) * 45}ms` } } as object)}
+      {...({
+        style: { "--delay": `${Math.min(index, 8) * 55}ms` },
+      } as object)}
     >
       <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2.5">
             <Link
               href={`/deployments/${deployment.id}`}
-              className="truncate font-semibold tracking-tight underline-offset-4 hover:text-[var(--accent)] hover:underline"
+              className="truncate font-semibold underline-offset-[5px] decoration-[var(--accent-line)] transition-colors duration-[var(--t-hover)] hover:text-[var(--accent)] hover:underline"
               title="Open this deployment"
             >
               {deployment.target_label}
             </Link>
             <StatusBadge status={deployment.status} />
             {deployment.suspended_by_admin && (
-              <span className="rounded-full border border-[var(--danger)]/30 bg-[var(--danger-soft)] px-2.5 py-0.5 text-xs font-medium text-[var(--danger)]">
-                Suspended
-              </span>
+              <Badge tone="danger">Suspended</Badge>
             )}
           </div>
 
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--text-dim)]">
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[var(--text-dim)]">
             {showOwner && deployment.user_email && (
               <span className="text-[var(--text-muted)]">{deployment.user_email}</span>
             )}
@@ -124,21 +125,25 @@ export default function DeploymentCard({
             <span>Updated {relativeTime(deployment.updated_at)}</span>
           </div>
 
-          {/* The URL only appears when it actually resolves. */}
+          {/* The URL appears only while it actually resolves. */}
           {running && deployment.url && (
             <a
               href={deployment.url}
               target="_blank"
               rel="noreferrer"
-              className="group mt-3 inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--ok)]/30 bg-[var(--ok-soft)] px-3 py-1.5 text-sm font-medium text-[var(--ok)] transition-colors hover:bg-[var(--ok)] hover:text-[var(--bg)]"
+              className={cx(
+                "group/url mt-3.5 inline-flex items-center gap-2 rounded-full border border-[var(--ok)]/25 bg-[var(--ok-soft)]",
+                "px-3.5 py-1.5 font-[family-name:var(--font-jetbrains-mono)] text-xs font-medium text-[var(--ok)]",
+                "transition-colors duration-[var(--t-hover)] ease-[var(--ease-out)] hover:bg-[var(--ok)] hover:text-[var(--bg-deep)]",
+              )}
             >
               {deployment.url.replace(/^https?:\/\//, "")}
-              <ExternalIcon className="h-3.5 w-3.5 opacity-70 transition-opacity group-hover:opacity-100" />
+              <ExternalIcon className="h-3 w-3 opacity-60 transition-opacity group-hover/url:opacity-100" />
             </a>
           )}
 
           {deployment.status === "failed" && deployment.error_message && (
-            <p className="mt-3 line-clamp-2 rounded-[var(--radius-sm)] bg-[var(--danger-soft)] px-3 py-2 text-xs text-[var(--danger)]">
+            <p className="mt-3.5 line-clamp-2 rounded-[var(--r-sm)] border border-[var(--danger)]/20 bg-[var(--danger-soft)] px-3.5 py-2.5 text-xs leading-relaxed text-[var(--danger)]">
               {deployment.error_message}
             </p>
           )}
@@ -165,6 +170,7 @@ export default function DeploymentCard({
                 disabled={busy}
                 onClick={() => act("restart", restartDeployment)}
                 title="Restart"
+                aria-label="Restart"
               >
                 <RestartIcon className="h-3.5 w-3.5" />
               </Button>
@@ -181,13 +187,15 @@ export default function DeploymentCard({
           )}
           <Link
             href={`/deployments/${deployment.id}`}
+            aria-label={`Open ${deployment.target_label}`}
             className={cx(
-              "inline-flex items-center justify-center rounded-[var(--radius-sm)] p-2",
-              "text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text)]",
+              "group/go flex h-9 w-9 items-center justify-center rounded-full border border-[var(--hairline)]",
+              "text-[var(--text-dim)] transition-[color,background-color,transform] duration-[var(--t-hover)] ease-[var(--ease-spring)]",
+              "hover:translate-x-0.5 hover:bg-[var(--surface-2)] hover:text-[var(--text)]",
             )}
             title="Details"
           >
-            <ChevronRight />
+            <ChevronRight className="h-4 w-4" />
           </Link>
         </div>
       </div>

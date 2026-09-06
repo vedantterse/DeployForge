@@ -185,7 +185,7 @@ export default function EnvVarEditor({
             rows={5}
             spellCheck={false}
             placeholder={"DATABASE_URL=postgres://…\nDEBUG=false"}
-            className="w-full rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-3 font-[family-name:var(--font-geist-mono)] text-xs outline-none focus:border-[var(--accent)]"
+            className="w-full rounded-[var(--r-sm)] border border-[var(--hairline-strong)] bg-[var(--surface-2)] p-3 font-[family-name:var(--font-jetbrains-mono)] text-xs outline-none focus:border-[var(--accent-line)]"
           />
           <Button size="sm" className="mt-2" onClick={applyPaste}>
             Add {parseDotEnv(pasted).length || ""} variables
@@ -201,7 +201,7 @@ export default function EnvVarEditor({
               onChange={(e) => update(index, { key: e.target.value })}
               placeholder="KEY"
               spellCheck={false}
-              className="w-full min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 font-[family-name:var(--font-geist-mono)] text-sm outline-none focus:border-[var(--accent)] sm:w-auto sm:max-w-[14rem]"
+              className="w-full min-w-0 flex-1 rounded-[var(--r-sm)] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2 font-[family-name:var(--font-jetbrains-mono)] text-sm outline-none focus:border-[var(--accent-line)] sm:w-auto sm:max-w-[14rem]"
             />
             <input
               value={row.value}
@@ -213,7 +213,7 @@ export default function EnvVarEditor({
                   : "value"
               }
               spellCheck={false}
-              className="w-full min-w-0 flex-[2] rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 font-[family-name:var(--font-geist-mono)] text-sm outline-none focus:border-[var(--accent)]"
+              className="w-full min-w-0 flex-[2] rounded-[var(--r-sm)] border border-[var(--hairline-strong)] bg-[var(--surface-2)] px-3 py-2 font-[family-name:var(--font-jetbrains-mono)] text-sm outline-none focus:border-[var(--accent-line)]"
             />
             <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--text-muted)]">
               <input
@@ -227,7 +227,7 @@ export default function EnvVarEditor({
             <button
               onClick={() => removeRow(index)}
               aria-label={`Remove ${row.key || "variable"}`}
-              className="rounded-[var(--radius-sm)] border border-[var(--border-strong)] p-2 text-[var(--text-dim)] transition-colors hover:border-[var(--danger)] hover:text-[var(--danger)]"
+              className="rounded-[var(--r-sm)] border border-[var(--hairline-strong)] p-2 text-[var(--text-dim)] transition-colors hover:border-[var(--danger)] hover:text-[var(--danger)]"
             >
               <TrashIcon className="h-3.5 w-3.5" />
             </button>
@@ -235,7 +235,7 @@ export default function EnvVarEditor({
         ))}
 
         {rows.length === 0 && (
-          <p className="rounded-[var(--radius-sm)] border border-dashed border-[var(--border-strong)] p-5 text-center text-sm text-[var(--text-dim)]">
+          <p className="rounded-[var(--r-sm)] border border-dashed border-[var(--hairline-strong)] p-5 text-center text-sm text-[var(--text-dim)]">
             No environment variables yet.
           </p>
         )}

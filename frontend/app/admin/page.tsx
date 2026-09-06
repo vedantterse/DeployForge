@@ -16,6 +16,7 @@ import RequireAuth from "@/components/RequireAuth";
 import { BarSeries, Breakdown, ChartCard, Gauge } from "@/components/Charts";
 import {
   Alert,
+  Eyebrow,
   Badge,
   Card,
   Dot,
@@ -61,7 +62,11 @@ function Overview() {
   }, []);
 
   useEffect(() => {
-    load();
+    // The loader is async: every setState inside it runs after an await, not
+    // during this effect. The rule cannot see through the call, so it is
+    // silenced here rather than contorting the fetch to satisfy a heuristic.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
     const timer = setInterval(load, 20000);
     return () => clearInterval(timer);
   }, [load]);
@@ -75,7 +80,8 @@ function Overview() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Platform overview</h1>
+        <Eyebrow>Platform</Eyebrow>
+        <h1 className="mt-3 text-[2rem] font-semibold leading-tight">Platform overview</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           The health of the machine and what everyone on it is running.
         </p>
@@ -230,7 +236,7 @@ function Overview() {
           </Card>
         ) : (
           <Card>
-            <ul className="divide-y divide-[var(--border)]">
+            <ul className="divide-y divide-[var(--hairline)]">
               {data.top_users.map((u) => (
                 <li
                   key={u.email}

@@ -14,6 +14,7 @@ import RequireAuth from "@/components/RequireAuth";
 import StatusBadge from "@/components/StatusBadge";
 import {
   Alert,
+  Eyebrow,
   Badge,
   Button,
   Card,
@@ -64,7 +65,11 @@ function AllDeployments() {
   }, []);
 
   useEffect(() => {
-    load();
+    // The loader is async: every setState inside it runs after an await, not
+    // during this effect. The rule cannot see through the call, so it is
+    // silenced here rather than contorting the fetch to satisfy a heuristic.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
   }, [load]);
 
   async function suspend(d: Deployment) {
@@ -132,7 +137,8 @@ It is stopped, its owner cannot start it again, and they cannot delete it to get
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
+        <Eyebrow>Everything deployed</Eyebrow>
+        <h1 className="mt-3 text-[2rem] font-semibold leading-tight">Projects</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Every deployment on the platform, whoever owns it. Suspending stops a
           project and prevents its owner restarting or re-adding it.
@@ -148,19 +154,20 @@ It is stopped, its owner cannot start it again, and they cannot delete it to get
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search by app, owner or URL…"
-            className="w-full rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] py-2 pl-9 pr-3 text-sm placeholder:text-[var(--text-dim)] focus:border-[var(--accent)] focus:outline-none"
+            className="w-full rounded-full border border-[var(--hairline-strong)] bg-[var(--surface-2)] py-2.5 pl-10 pr-4 text-sm shadow-[var(--bevel)] placeholder:text-[var(--text-dim)] transition-[border-color,background-color] duration-[var(--t-hover)] focus:border-[var(--accent-line)] focus:bg-[var(--surface-3)] focus:outline-none"
           />
         </div>
 
-        <div className="flex rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-1">
+        <div className="flex rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] p-1 shadow-[var(--bevel)]">
           {(["all", "running", "failed", "suspended"] as Filter[]).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
               className={cx(
-                "rounded-[calc(var(--radius-sm)-2px)] px-3 py-1.5 text-xs font-medium capitalize transition-colors",
+                "rounded-full px-3.5 py-1.5 text-xs font-medium capitalize",
+                "transition-[background-color,color] duration-[var(--t-hover)] ease-[var(--ease-out)]",
                 filter === f
-                  ? "bg-[var(--accent)] text-[var(--accent-text)]"
+                  ? "bg-[var(--solid)] text-[var(--solid-text)]"
                   : "text-[var(--text-muted)] hover:text-[var(--text)]",
               )}
             >
@@ -237,7 +244,7 @@ It is stopped, its owner cannot start it again, and they cannot delete it to get
                         </a>
                       )}
                       {d.suspended_by_admin && d.suspension_reason && (
-                        <p className="mt-2 rounded-[var(--radius-sm)] bg-[var(--danger-soft)] px-3 py-2 text-xs text-[var(--danger)]">
+                        <p className="mt-2 rounded-[var(--r-sm)] bg-[var(--danger-soft)] px-3 py-2 text-xs text-[var(--danger)]">
                           <span className="font-semibold">Suspended:</span>{" "}
                           {d.suspension_reason}
                         </p>

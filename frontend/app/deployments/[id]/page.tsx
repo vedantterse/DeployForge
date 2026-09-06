@@ -196,7 +196,7 @@ function Detail() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight">
+            <h1 className="text-[1.75rem] font-semibold leading-tight">
               {deployment.target_label}
             </h1>
             <StatusBadge status={deployment.status} />
@@ -272,35 +272,43 @@ function Detail() {
 
       {/* --- Live URL ---------------------------------------------------- */}
       {running && deployment.url && (
-        <Card className="border-[var(--ok)]/30 bg-[var(--ok-soft)]/40 p-5">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-[var(--ok)]">
-                Live
-              </p>
-              <a
-                href={deployment.url}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-1 inline-flex items-center gap-2 text-lg font-semibold text-[var(--text)] hover:text-[var(--ok)]"
-              >
-                {deployment.url.replace(/^https?:\/\//, "")}
-                <ExternalIcon className="h-4 w-4" />
+        <div className="bezel border-[var(--ok)]/25 bg-[var(--ok-soft)]">
+          <div className="bg-[var(--surface)] p-6">
+            <div className="flex flex-wrap items-center justify-between gap-5">
+              <div className="min-w-0">
+                <span className="inline-flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--ok)]">
+                  <span className="live-dot inline-block h-1.5 w-1.5 rounded-full bg-[var(--ok)]" />
+                  Live
+                </span>
+                <a
+                  href={deployment.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2.5 flex min-w-0 items-center gap-2.5 font-[family-name:var(--font-jetbrains-mono)] text-[19px] font-medium underline-offset-[6px] transition-colors duration-[var(--t-hover)] hover:text-[var(--ok)] hover:underline"
+                >
+                  <span className="truncate">
+                    {deployment.url.replace(/^https?:\/\//, "")}
+                  </span>
+                  <ExternalIcon className="h-4 w-4 shrink-0 opacity-50" />
+                </a>
+                <p className="mt-2 text-xs text-[var(--text-dim)]">
+                  Running for{" "}
+                  {relativeTime(deployment.runtime_started_at).replace(" ago", "")}
+                  {deployment.app_port && ` · container port ${deployment.app_port}`}
+                </p>
+              </div>
+              <a href={deployment.url} target="_blank" rel="noreferrer">
+                <Button
+                  variant="primary"
+                  size="lg"
+                  trailing={<ExternalIcon className="h-3.5 w-3.5" />}
+                >
+                  Open app
+                </Button>
               </a>
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Running for {relativeTime(deployment.runtime_started_at)
-                  .replace(" ago", "")}
-                {deployment.app_port && ` · container port ${deployment.app_port}`}
-              </p>
             </div>
-            <a href={deployment.url} target="_blank" rel="noreferrer">
-              <Button variant="primary">
-                Open app
-                <ExternalIcon className="h-4 w-4" />
-              </Button>
-            </a>
           </div>
-        </Card>
+        </div>
       )}
 
       {/* --- Facts ------------------------------------------------------- */}
@@ -355,7 +363,7 @@ function Detail() {
                   "rounded-full border px-2.5 py-0.5 text-xs font-medium",
                   deployment.container_name?.includes(`-${service}-`)
                     ? "border-[var(--ok)]/30 bg-[var(--ok-soft)] text-[var(--ok)]"
-                    : "border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-muted)]",
+                    : "border-[var(--hairline-strong)] bg-[var(--surface-2)] text-[var(--text-muted)]",
                 )}
               >
                 {service}
@@ -375,15 +383,16 @@ function Detail() {
         <SectionTitle
           hint="The build log says why an image could not be made. The runtime log says why the app will not stay up."
           action={
-            <div className="flex rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface-2)] p-1">
+            <div className="flex rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] p-1 shadow-[var(--bevel)]">
               {(["build", "runtime"] as Tab[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
                   className={cx(
-                    "rounded-[calc(var(--radius-sm)-2px)] px-3 py-1.5 text-xs font-medium capitalize transition-colors",
+                    "rounded-full px-3.5 py-1.5 text-xs font-medium",
+                    "transition-[background-color,color] duration-[var(--t-hover)] ease-[var(--ease-out)]",
                     tab === t
-                      ? "bg-[var(--accent)] text-[var(--accent-text)]"
+                      ? "bg-[var(--solid)] text-[var(--solid-text)]"
                       : "text-[var(--text-muted)] hover:text-[var(--text)]",
                   )}
                 >
@@ -459,7 +468,7 @@ function Fact({
         title={title}
         className={cx(
           "mt-1 flex items-center gap-1.5 truncate text-sm font-medium",
-          mono && "font-[family-name:var(--font-geist-mono)]",
+          mono && "font-[family-name:var(--font-jetbrains-mono)]",
         )}
       >
         {icon}

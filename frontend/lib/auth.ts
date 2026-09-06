@@ -62,6 +62,17 @@ export function signup(email: string, password: string): Promise<TokenResponse> 
   });
 }
 
+/**
+ * Where an account belongs after signing in.
+ *
+ * An administrator runs the platform and deploys nothing on it, so the student
+ * dashboard is not a lesser version of their home — it is a screen they never
+ * see. One helper, so every redirect agrees.
+ */
+export function homeFor(user: Pick<User, "role">): string {
+  return user.role === "admin" ? "/admin" : "/dashboard";
+}
+
 /** The logged-in user, or null if there is no usable token. */
 export async function getCurrentUser(): Promise<User | null> {
   if (!getToken()) return null;

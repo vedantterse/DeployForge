@@ -16,11 +16,18 @@ import {
   Alert,
   Button,
   EmptyState,
+  Eyebrow,
   Metric,
   SectionTitle,
   Skeleton,
 } from "@/components/ui";
-import { BoxIcon, RocketIcon } from "@/components/Icons";
+import {
+  AlertIcon,
+  ArrowRight,
+  BoxIcon,
+  RocketIcon,
+  ServerIcon,
+} from "@/components/Icons";
 import {
   isBusy,
   isRunning,
@@ -86,14 +93,18 @@ function Dashboard({ user }: { user: User }) {
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">My apps</h1>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">
+          <Eyebrow>Your workspace</Eyebrow>
+        <h1 className="mt-3 text-[2rem] font-semibold leading-tight">My apps</h1>
+          <p className="mt-1.5 text-sm text-[var(--text-muted)]">
             Everything you have deployed, and whether it is up.
           </p>
         </div>
         {user.can_deploy !== false && (
           <Link href="/dashboard/new">
-            <Button variant="primary">
+            <Button
+              variant="primary"
+              trailing={<ArrowRight className="h-3 w-3" />}
+            >
               <RocketIcon className="h-4 w-4" />
               Deploy new app
             </Button>
@@ -117,16 +128,19 @@ function Dashboard({ user }: { user: User }) {
           value={deployments ? running : "—"}
           tone={running > 0 ? "ok" : "neutral"}
           hint={running > 0 ? "serving traffic" : "nothing live right now"}
+          icon={<ServerIcon className="h-4 w-4" />}
         />
         <Metric
           label="Total apps"
           value={deployments ? deployments.length : "—"}
+          icon={<BoxIcon className="h-4 w-4" />}
         />
         <Metric
           label="Failed"
           value={deployments ? failed : "—"}
           tone={failed > 0 ? "danger" : "neutral"}
           hint={failed > 0 ? "check the build log" : "none"}
+          icon={<AlertIcon className="h-4 w-4" />}
         />
       </div>
 
@@ -145,7 +159,11 @@ function Dashboard({ user }: { user: User }) {
             title="Nothing deployed yet"
             action={
               <Link href="/dashboard/new">
-                <Button variant="primary">
+                <Button
+                  variant="primary"
+                  size="lg"
+                  trailing={<ArrowRight className="h-3.5 w-3.5" />}
+                >
                   <RocketIcon className="h-4 w-4" />
                   Deploy your first app
                 </Button>

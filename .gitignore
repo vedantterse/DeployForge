@@ -4,6 +4,10 @@ CLAUDE.md
 SCHEMA.md
 PROJECT_STRUCTURE.md
 
+# AI coding-agent tooling — installed per developer, not part of the project.
+.claude/
+.agents/
+
 # Secrets — never commit environment files.
 .env
 .env.*

@@ -60,7 +60,7 @@ export default function RequireAuth({
     // A skeleton in the final layout, so the page does not jump when it loads.
     return (
       <div className="flex min-h-screen">
-        <div className="hidden w-60 shrink-0 border-r border-[var(--border)] bg-[var(--surface)] lg:block" />
+        <div className="hidden w-60 shrink-0 border-r border-[var(--hairline)] bg-[var(--surface)] lg:block" />
         <div className="flex-1 px-8 py-8">
           <div className="mx-auto w-full max-w-6xl space-y-6">
             <Skeleton className="h-9 w-56" />
