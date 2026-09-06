@@ -39,7 +39,10 @@ export type GitHubRepo = {
   clone_url: string;
   html_url: string;
   private: boolean;
+  fork: boolean;
   updated_at: string | null;
+  /** When it appeared on this account — for a fork, when it was forked. */
+  created_at: string | null;
   /** True when this account has already connected a target from this repo. */
   connected: boolean;
   /** Which targets are taken. "" means the whole repository. */
@@ -122,6 +125,25 @@ export function describeDetection(result: DetectionResult): string {
 
 export function listRepos(): Promise<GitHubRepo[]> {
   return apiFetch<GitHubRepo[]>("/github/repos");
+}
+
+/**
+ * Which date to show for a repository, and what to call it.
+ *
+ * A fork inherits the parent's push date, so "updated 2 years ago" on a
+ * repository someone forked this morning is not just unhelpful — it reads as
+ * the platform having missed it. When the repository is newer on this account
+ * than its last push, the honest label is when it was added.
+ */
+export function repoRecency(repo: GitHubRepo): {
+  iso: string | null;
+  label: "added" | "updated";
+} {
+  const pushed = repo.updated_at ?? "";
+  const created = repo.created_at ?? "";
+  return created > pushed
+    ? { iso: repo.created_at, label: "added" }
+    : { iso: repo.updated_at, label: "updated" };
 }
 
 export type Candidate = {

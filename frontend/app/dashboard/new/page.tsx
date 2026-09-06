@@ -33,6 +33,7 @@ import {
   DockerIcon,
   FolderIcon,
   GitHubIcon,
+  RestartIcon,
   RocketIcon,
   SearchIcon,
 } from "@/components/Icons";
@@ -42,6 +43,7 @@ import {
   getAuthorizeUrl,
   getConnectionStatus,
   listRepos,
+  repoRecency,
   scanRepo,
   selectTarget,
   type Candidate,
@@ -74,6 +76,7 @@ function Wizard() {
   const [connectError, setConnectError] = useState("");
   const [repos, setRepos] = useState<GitHubRepo[] | null>(null);
   const [query, setQuery] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [scanning, setScanning] = useState<string | null>(null);
@@ -112,6 +115,27 @@ function Wizard() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadConnection();
   }, [loadConnection]);
+
+  /**
+   * Re-read the repository list from GitHub.
+   *
+   * Nothing is cached server-side, but the list is fetched once when this page
+   * mounts — so a repository created or forked while the page was already open
+   * will not be there until someone asks again. This is that ask.
+   */
+  async function refreshRepos() {
+    setRefreshing(true);
+    setError("");
+    try {
+      setRepos(await listRepos());
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not refresh the list.",
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   async function connect() {
     setConnectError("");
@@ -260,9 +284,24 @@ function Wizard() {
                 />
               </div>
 
+              <div className="flex items-center justify-between gap-3 text-xs text-[var(--text-dim)]">
+                <span>Newest first — forks count from when you forked them.</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  loading={refreshing}
+                  onClick={refreshRepos}
+                  title="Fetch the list from GitHub again"
+                >
+                  <RestartIcon className="h-3.5 w-3.5" />
+                  Refresh
+                </Button>
+              </div>
+
               <div className="max-h-96 space-y-2 overflow-auto pr-1">
                 {filtered?.map((repo) => {
                   const deployed = repo.connected;
+                  const recency = repoRecency(repo);
                   return (
                     <div
                       key={repo.github_repo_id}
@@ -285,6 +324,7 @@ function Wizard() {
                             {repo.full_name}
                           </span>
                           {repo.private && <Badge>Private</Badge>}
+                          {repo.fork && <Badge>Fork</Badge>}
                           {deployed && (
                             <Badge tone="ok">
                               <CheckIcon className="h-3 w-3" />
@@ -294,7 +334,9 @@ function Wizard() {
                         </span>
                         <span className="mt-0.5 flex items-center gap-2 text-xs text-[var(--text-dim)]">
                           {repo.language && <span>{repo.language}</span>}
-                          <span>updated {relativeTime(repo.updated_at)}</span>
+                          <span>
+                            {recency.label} {relativeTime(recency.iso)}
+                          </span>
                           {deployed && (
                             <span>
                               {repo.connected_paths

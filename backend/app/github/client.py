@@ -86,15 +86,38 @@ def _repo_summary(repo: dict[str, Any]) -> dict[str, Any]:
         "clone_url": repo.get("clone_url") or "",
         "html_url": repo.get("html_url") or "",
         "private": bool(repo.get("private")),
+        "fork": bool(repo.get("fork")),
         "updated_at": repo.get("pushed_at") or repo.get("updated_at"),
+        # When the repository appeared on this account. For a fork that is the
+        # moment it was forked, which is the only date that reflects the user
+        # actually doing something.
+        "created_at": repo.get("created_at"),
     }
+
+
+def _recency(repo: dict[str, Any]) -> str:
+    """
+    The date to order a repository by: the later of pushed and created.
+
+    Pushed alone is wrong for forks. A fork inherits the parent's `pushed_at`,
+    so a repository forked seconds ago can carry a date from years back and
+    sink to the bottom of the list — which looks exactly like the platform
+    failing to notice it. Taking whichever date is later puts both a fresh fork
+    and an actively developed repository where the user expects them.
+    """
+    return max(
+        str(repo.get("updated_at") or ""),
+        str(repo.get("created_at") or ""),
+    )
 
 
 async def list_repositories(access_token: str) -> list[dict[str, Any]]:
     """
-    Every repository the token can see, most recently pushed first.
+    Every repository the token can see, most recently *touched* first.
 
     Walks pages until GitHub returns a short page or the page cap is reached.
+    GitHub is asked for `sort=pushed` so the page cap keeps the liveliest
+    repositories; the final order is decided here (see `_recency`).
     """
     repos: list[dict[str, Any]] = []
     for page in range(1, _MAX_REPO_PAGES + 1):
@@ -112,6 +135,8 @@ async def list_repositories(access_token: str) -> list[dict[str, Any]]:
         repos.extend(_repo_summary(r) for r in batch if isinstance(r, dict))
         if len(batch) < _PER_PAGE:
             break
+
+    repos.sort(key=_recency, reverse=True)
     return repos
 
 

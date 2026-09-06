@@ -36,7 +36,11 @@ class RepoOut(BaseModel):
     clone_url: str
     html_url: str
     private: bool
+    fork: bool = False
     updated_at: datetime | None = None
+    # When the repository appeared on this account. For a fork this is the
+    # moment it was forked, which is the only date reflecting a user action.
+    created_at: datetime | None = None
 
     # --- what this account has already done with it ---
     # A repository can only be connected once per target, so the list marks
